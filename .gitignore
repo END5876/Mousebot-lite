@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/music/cache/
+data/*.json
+data/cookies.txt
+data/www.youtube.com_cookies.txt
+npm-debug.log
