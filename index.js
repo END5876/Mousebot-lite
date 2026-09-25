@@ -98,7 +98,7 @@ client.once('clientReady', async () => {
   setupUnifiedCommands(client);   // 3. 載入合併後的 /music 指令
 
   client.user.setPresence({
-    activities: [{ name: '縮減版｜autojoin + music', type: 2 }],
+    activities: [{ name: '皮鼓', type: 2 }],
     status: 'online'
   });
 
