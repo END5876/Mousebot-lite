@@ -61,11 +61,11 @@ client.on('interactionCreate', async interaction => {
       content: '❌ 執行指令時發生錯誤，請稍後再試。',
       flags: MessageFlags.Ephemeral,
     };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(reply);
-    } else {
-      await interaction.reply(reply);
-    }
+    // 回覆錯誤訊息本身也可能失敗（互動已逾時、頻道已刪除），不要讓它變成 unhandled rejection
+    const send = interaction.replied || interaction.deferred
+      ? interaction.followUp(reply)
+      : interaction.reply(reply);
+    await send.catch(err => console.error('❌ 回覆錯誤訊息失敗：', err.message));
   }
 });
 
@@ -120,6 +120,30 @@ process.on('unhandledRejection', error => {
 process.on('uncaughtException', error => {
   console.error('❌ 未捕捉的例外：', error);
 });
+
+// ── 正常關機（SIGTERM / SIGINT）──────────────────────────
+// 沒有這個處理時程序是被訊號直接殺掉，process.on('exit') 不會執行，
+// onlineMusicHandler 的 yt-dlp 子程序清理會被跳過。
+// 先關閉 Discord 連線（最多等 SHUTDOWN_TIMEOUT_MS），再以 process.exit() 結束。
+const SHUTDOWN_TIMEOUT_MS = 3000;
+let shuttingDown = false;
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`⏹️ 收到 ${signal}，正在關閉...`);
+  const timeout = new Promise(resolve => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS));
+  try {
+    await Promise.race([client.destroy(), timeout]);
+  } catch {}
+  // process.exit() 會觸發各模組註冊的 'exit' 處理（結束 yt-dlp 子程序）
+  process.exit(0);
+}
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => gracefulShutdown(signal));
+}
 
 // ── 登入 ──────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN).catch(error => {
