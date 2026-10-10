@@ -1,5 +1,4 @@
 node_modules/
 .env
-data/music/cache/
 data/
-npm-debug.log
+*.log

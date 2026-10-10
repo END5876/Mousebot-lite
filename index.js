@@ -1,9 +1,14 @@
 require('dotenv').config();
+// 必須最早安裝：之後載入的任何模組在載入期間丟出的錯誤也要被接住
+const processGuards = require('./utils/processGuards');
+processGuards.install();
 const { Client, GatewayIntentBits, REST, Routes, Collection, MessageFlags } = require('discord.js');
 const logger = require('./utils/logger');
 const bootSummary = require('./utils/bootSummary');
+const { OWNER_USER_IDS } = require('./utils/config');
 
-// ── 導入處理器（縮減版：只保留 autojoin + music）───────────
+// ── 導入處理器（精簡版：只保留 autojoin + 音樂）───────────
+// handlers/ 與 utils/ 底下的檔案與正式版 Mousebot 逐字相同，同步時直接覆蓋即可。
 const { setupAutoJoinCommands }  = require('./handlers/autoJoinHandler');
 
 // ── 音樂模組 ───────────────────────────────────────────────
@@ -12,15 +17,23 @@ const { setupOnlineMusicEngine } = require('./handlers/musicplayer/onlineMusicHa
 const { setupLocalMusicEngine }  = require('./handlers/musicplayer/localMusicHandler');
 
 // ── 創建客戶端 ─────────────────────────────────────────────
+// 精簡版沒有任何 messageCreate 監聽，不需要 GuildMessages / MessageContent。
 const client = new Client({
+  // 預設只允許 @使用者；擋掉 @everyone / @here / 身分組提及。
+  allowedMentions: { parse: ['users'] },
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
   ]
 });
+
+// 致命錯誤（uncaughtException）與 SIGTERM / SIGINT 時，先讓 Discord 連線正常關閉再結束程序
+processGuards.setFatalHook(() => client.destroy());
+
+if (OWNER_USER_IDS.size === 0) {
+  bootSummary.report('擁有者權限', 'warn', '未設定 OWNER_USER_ID：/autojoin 變更頻道將無人可用');
+}
 
 // ── Slash Command 集合 ─────────────────────────────────────
 client.commands = new Collection();
@@ -112,38 +125,6 @@ client.once('clientReady', async () => {
 client.on('error', error => {
   console.error('❌ Discord 客戶端錯誤：', error);
 });
-
-process.on('unhandledRejection', error => {
-  console.error('❌ 未處理的 Promise 拒絕：', error);
-});
-
-process.on('uncaughtException', error => {
-  console.error('❌ 未捕捉的例外：', error);
-});
-
-// ── 正常關機（SIGTERM / SIGINT）──────────────────────────
-// 沒有這個處理時程序是被訊號直接殺掉，process.on('exit') 不會執行，
-// onlineMusicHandler 的 yt-dlp 子程序清理會被跳過。
-// 先關閉 Discord 連線（最多等 SHUTDOWN_TIMEOUT_MS），再以 process.exit() 結束。
-const SHUTDOWN_TIMEOUT_MS = 3000;
-let shuttingDown = false;
-
-async function gracefulShutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  console.log(`⏹️ 收到 ${signal}，正在關閉...`);
-  const timeout = new Promise(resolve => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS));
-  try {
-    await Promise.race([client.destroy(), timeout]);
-  } catch {}
-  // process.exit() 會觸發各模組註冊的 'exit' 處理（結束 yt-dlp 子程序）
-  process.exit(0);
-}
-
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.once(signal, () => gracefulShutdown(signal));
-}
 
 // ── 登入 ──────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN).catch(error => {

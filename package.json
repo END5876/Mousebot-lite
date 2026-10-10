@@ -1,17 +1,21 @@
 {
   "name": "mousebot-lite",
-  "version": "1.0.0",
-  "description": "Mousebot 縮減版 — 只保留 autojoin（自動加入語音頻道）與 music（點歌）功能",
+  "version": "2.0.0",
+  "description": "Mousebot 精簡版 — 只保留 autojoin（自動加入語音頻道）與音樂功能；handlers/ 與 utils/ 與正式版逐字相同",
   "main": "index.js",
+  "private": true,
   "scripts": {
     "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "license": "ISC",
   "dependencies": {
     "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.0",
     "@snazzah/davey": "^0.1.9",
-    "axios": "^1.20.0",
+    "axios": "^1.15.0",
     "discord.js": "^14.25.1",
     "dotenv": "^17.4.1",
     "libsodium-wrappers": "^0.8.1"
