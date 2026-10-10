@@ -104,13 +104,8 @@ function isYouTubeUrl(url) {
   return /youtube\.com|youtu\.be/.test(url);
 }
 
+// Bilibili 只讀 .env 環境變數，不讀 cookies.txt
 function prepareBilibiliCookies() {
-  if (fs.existsSync(COOKIES_PATH)) {
-    logger.debug('Bilibili', '找到 cookies.txt');
-    BILIBILI_COOKIES_FILE  = COOKIES_PATH;
-    BILIBILI_COOKIE_HEADER = null;
-    return;
-  }
   const sessdata   = process.env.BILIBILI_SESSDATA;
   const biliJct    = process.env.BILIBILI_BILI_JCT;
   const dedeUserId = process.env.BILIBILI_DEDEUSERID;
