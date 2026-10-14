@@ -6,7 +6,7 @@ Mousebot 的精簡版，只保留兩個功能：
 - **音樂**：本地音樂庫＋ YouTube / Bilibili 點歌、播放清單、循環／隨機連播、控制面板（`/play`、`/music`）
 
 `handlers/` 與 `utils/` 底下的檔案與正式版 [Mousebot](https://github.com/END5876/Mousebot) **逐字相同**，
-只有 `index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh`、`test/` 是精簡版自己的。
+只有 `index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
 
 ## 專案結構
 
@@ -25,7 +25,6 @@ Mousebot 的精簡版，只保留兩個功能：
 │   ├── logger.js                     # 統一 log 工具（LOG_LEVEL）
 │   ├── bootSummary.js
 │   └── rateLimiter.js                # （正式版 AI 功能用，精簡版未使用）
-├── test/                             # node:test 單元測試
 ├── data/                             # 執行時產生：設定檔、播放快照、data/music 本地音樂庫與下載快取
 ├── Dockerfile
 ├── docker-entrypoint.sh              # 降權為 bot 帳號、自動重啟
@@ -82,8 +81,8 @@ npm start
 
 ```bash
 npm run lint    # ESLint（禁止直接使用 console.*，請改用 utils/logger.js）
-npm test        # node:test 單元測試
-npm run check   # 以上兩者，GitHub Actions 每次 push / PR 都會執行
+npm test        # node:test 單元測試（test/ 只存在本機，不進版本庫）
+npm run check   # 以上兩者（GitHub Actions 每次 push / PR 只跑 lint）
 ```
 
 建議設定 `DEV_GUILD_ID`，Slash Commands 只註冊到測試伺服器、改完立即生效。
