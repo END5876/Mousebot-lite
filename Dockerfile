@@ -59,4 +59,10 @@ COPY . .
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# ── 健康檢查 ────────────────────────────────────────────
+# utils/health.js 在 127.0.0.1:${HEALTH_PORT:-3939}/healthz 回報 Discord 連線狀態（503 = 斷線超過寬限期）。
+# start-period 涵蓋 yt-dlp / bgutil 檢查與 Discord 登入的時間。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.HEALTH_PORT||3939)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["/usr/local/bin/docker-entrypoint.sh"]

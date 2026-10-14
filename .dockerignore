@@ -7,3 +7,6 @@ node_modules
 data
 *.log
 README.md
+test
+.github
+eslint.config.js
