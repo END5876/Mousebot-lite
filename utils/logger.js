@@ -34,24 +34,35 @@ function tag(mod) {
   return `${C.cyan}[${mod}]${C.reset}`;
 }
 
+// 🔒 [日誌注入] 使用者能控制的字串（網頁播放器送來的歌名、影片標題）會被寫進 log：換行可以偽造
+// 一整行看起來正常的紀錄，ESC 序列可以在終端機裡清除或改寫前面的輸出。字串參數裡的控制字元
+// （Tab 以外的 C0、DEL、C1）一律換成 \n、\x1b 這種看得見的形式；Error 物件不處理（堆疊本來就是多行）。
+// eslint-disable-next-line no-control-regex -- 這裡就是要比對控制字元
+const CONTROL_CHARS = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/g;
+const ESCAPES = { '\n': '\\n', '\r': '\\r' };
+function escapeControlChars(s) {
+  return String(s).replace(CONTROL_CHARS, (c) => ESCAPES[c] || `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+const cleanArgs = (args) => args.map((a) => (typeof a === 'string' ? escapeControlChars(a) : a));
+
 function success(mod, ...args) {
-  if (enabled('info')) console.log(`${C.green}✅${C.reset} ${tag(mod)}`, ...args);
+  if (enabled('info')) console.log(`${C.green}✅${C.reset} ${tag(mod)}`, ...cleanArgs(args));
 }
 
 function info(mod, ...args) {
-  if (enabled('info')) console.log(`${C.gray}·${C.reset}  ${tag(mod)}`, ...args);
+  if (enabled('info')) console.log(`${C.gray}·${C.reset}  ${tag(mod)}`, ...cleanArgs(args));
 }
 
 function warn(mod, ...args) {
-  if (enabled('warn')) console.error(`${C.yellow}⚠️${C.reset}  ${tag(mod)}`, ...args);
+  if (enabled('warn')) console.error(`${C.yellow}⚠️${C.reset}  ${tag(mod)}`, ...cleanArgs(args));
 }
 
 function error(mod, ...args) {
-  if (enabled('error')) console.error(`${C.red}❌${C.reset} ${tag(mod)}`, ...args);
+  if (enabled('error')) console.error(`${C.red}❌${C.reset} ${tag(mod)}`, ...cleanArgs(args));
 }
 
 function debug(mod, ...args) {
-  if (enabled('debug')) console.log(`${C.gray}   · [${mod}]${C.reset}`, ...args);
+  if (enabled('debug')) console.log(`${C.gray}   · [${mod}]${C.reset}`, ...cleanArgs(args));
 }
 
 function section(title) {
