@@ -26,6 +26,7 @@ Mousebot 的精簡版，只保留兩個功能：
 │   ├── bootSummary.js
 │   └── rateLimiter.js                # （正式版 AI 功能用，精簡版未使用）
 ├── data/                             # 執行時產生：設定檔、播放快照、data/music 本地音樂庫與下載快取
+├── test/                             # node:test 單元測試（npm test）
 ├── Dockerfile
 ├── docker-entrypoint.sh              # 降權為 bot 帳號、自動重啟
 └── .env.example
@@ -81,8 +82,8 @@ npm start
 
 ```bash
 npm run lint    # ESLint（禁止直接使用 console.*，請改用 utils/logger.js）
-npm test        # node:test 單元測試（test/ 只存在本機，不進版本庫）
-npm run check   # 以上兩者（GitHub Actions 每次 push / PR 只跑 lint）
+npm test        # node:test 單元測試（test/*.test.js）
+npm run check   # 以上兩者（GitHub Actions 每次 push / PR 也會跑 lint 與測試）
 ```
 
 建議設定 `DEV_GUILD_ID`，Slash Commands 只註冊到測試伺服器、改完立即生效。
@@ -104,3 +105,7 @@ git archive HEAD handlers/musicplayer handlers/autoJoinHandler.js handlers/audio
 若正式版新增了這些模組會用到的 npm 套件，再同步更新 `package.json`。
 正式版 `index.js` 的啟動流程有變動時（例如指令註冊、健康檢查、播放恢復），需手動套用到精簡版的 `index.js`。
 同步後執行 `npm run check` 確認沒有缺漏。
+
+## License
+
+[ISC](LICENSE)
