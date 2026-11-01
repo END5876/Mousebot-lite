@@ -5,8 +5,9 @@ Mousebot 的精簡版，只保留兩個功能：
 - **autojoin**：Bot 常駐在指定語音頻道，斷線自動重連（`/autojoin`）
 - **音樂**：本地音樂庫＋ YouTube / Bilibili 點歌、播放清單、循環／隨機連播、控制面板（`/play`、`/music`）
 
-`handlers/` 與 `utils/` 底下的檔案與正式版 [Mousebot](https://github.com/END5876/Mousebot) **逐字相同**，
-只有 `index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
+`handlers/` 與 `utils/` 的程式碼源自正式版 [Mousebot](https://github.com/END5876/Mousebot)，
+大部分檔案相同；少數檔案因為精簡版沒有管理面板、告警與心跳而刻意不同（見「從正式版同步」）。
+`index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
 
 ## 專案結構
 
@@ -95,11 +96,27 @@ npm run check   # 以上兩者（GitHub Actions 每次 push / PR 也會跑 lint 
 
 ## 從正式版同步
 
-`handlers/` 與 `utils/` 和正式版逐字相同，正式版更新後直接覆蓋即可。在正式版 repo 執行：
+`handlers/` 與 `utils/` 多數檔案和正式版相同，但**下列檔案不能直接覆蓋**，因為正式版多了精簡版沒有的管理面板／告警功能，
+覆蓋會讓精簡版 `require` 到不存在的模組：
+
+| 檔案 | 與正式版的差異 |
+|---|---|
+| `handlers/autoJoinHandler.js` | 沒有管理面板用的 `getAutoJoinConfig` 等區段 |
+| `handlers/musicplayer/musicCache.js` | 少匯出 `SUPPORTED_EXTENSIONS`（管理面板用） |
+| `utils/bootSummary.js` | 少 `getItems` |
+| `utils/commandSync.js` | 少 `clientSyncOptions`、`getSyncStatus` |
+| `utils/health.js` | 少匯出 `collectHealth`、`discordWsStatus` |
+| `utils/logger.js` | 沒有給管理面板「日誌」頁用的最近 log 緩衝（`getRecent`） |
+| `utils/processGuards.js` | 沒有 `crashLog` 與管理面板的重新啟動 |
+| `utils/alert.js`、`crashLog.js`、`heartbeat.js` | 精簡版沒有這三個檔案 |
+
+同步方式：先在兩個 repo 之間比對差異；表中列出的檔案以外，有差異就是落後，直接複製正式版的版本：
 
 ```bash
-git archive HEAD handlers/musicplayer handlers/autoJoinHandler.js handlers/audioManager.js utils \
-  | tar -x -C /path/to/Mousebot-lite
+# 在 Mousebot-lite 目錄；../Mousebot 是正式版
+for f in $(git ls-files handlers utils); do
+  diff -q --strip-trailing-cr "../Mousebot/$f" "$f" >/dev/null || echo "不同：$f"
+done
 ```
 
 若正式版新增了這些模組會用到的 npm 套件，再同步更新 `package.json`。

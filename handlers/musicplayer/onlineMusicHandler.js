@@ -572,14 +572,19 @@ function _fallbackStream(guildId, item, player, retryCount, silent) {
     dataReceived = true;
   });
   ytdlp.stderr.on('data', data => {
-    const err = data.toString();
-    if (!err.includes('Deleting original file')) {
-      const benign = err.includes('unable to write data') ||
-                     err.includes('Broken pipe') ||
-                     err.includes('Invalid argument');
+    for (const line of data.toString().split(/\r?\n/)) {
+      if (!line.trim() || line.includes('Deleting original file')) continue;
+      // 警告仍累積到 errorOutput，供 classifyYouTubeError 判斷，但不算錯誤
+      errorOutput += line + '\n';
+      if (/^(WARNING:|Deprecated Feature:)/.test(line)) {
+        if (!silent) logger.warn(platform, `yt-dlp: ${line}`);
+        continue;
+      }
+      const benign = line.includes('unable to write data') ||
+                     line.includes('Broken pipe') ||
+                     line.includes('Invalid argument');
       // silent（循環重播）只隱藏例行訊息：跳過歌曲造成的 Broken pipe 這類良性輸出；真正的錯誤一律記錄
-      if (!benign || !silent) logger.error(platform, `yt-dlp stderr:`, err);
-      errorOutput += err;
+      if (!benign || !silent) logger.error(platform, `yt-dlp stderr:`, line);
       if (!benign) hasError = true;
     }
   });
