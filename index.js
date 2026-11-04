@@ -9,9 +9,13 @@ const { OWNER_USER_IDS } = require('./utils/config');
 const { syncCommands } = require('./utils/commandSync');
 const { startHealthServer } = require('./utils/health');
 
-// ── 導入處理器（精簡版：只保留 autojoin + 音樂）───────────
-// handlers/ 與 utils/ 底下的檔案與正式版 Mousebot 逐字相同，同步時直接覆蓋即可。
+// ── 導入處理器（精簡版：autojoin + 音樂 + 選用的單一人格 AI 聊天）──
+// handlers/ 與 utils/ 多數檔案與正式版 Mousebot 相同；刻意不同的檔案列在 README「從正式版同步」。
 const { setupAutoJoinCommands }  = require('./handlers/autoJoinHandler');
+
+// ── AI 對話（選用）：有設定 GEMINI_API_KEY 才啟用 ─────────
+// 沒設定時連模組都不載入（不載入 sharp、不讀 data/prompts），也不多要訊息相關的 intents。
+const AI_ENABLED = !!process.env.GEMINI_API_KEY?.trim();
 
 // ── 音樂模組 ───────────────────────────────────────────────
 const { setupUnifiedCommands, resumeSavedSessions, startWebSync } = require('./handlers/musicplayer/unifiedQueue');
@@ -19,7 +23,8 @@ const { setupOnlineMusicEngine } = require('./handlers/musicplayer/onlineMusicHa
 const { setupLocalMusicEngine }  = require('./handlers/musicplayer/localMusicHandler');
 
 // ── 創建客戶端 ─────────────────────────────────────────────
-// 精簡版沒有任何 messageCreate 監聽，不需要 GuildMessages / MessageContent。
+// 只有 AI 聊天會監聽 messageCreate：啟用時才要 GuildMessages / MessageContent
+// （MessageContent 是特權 intent，要在 Discord Developer Portal 開啟，群聊歷史與隨機插話需要讀訊息內容）。
 const client = new Client({
   // 預設只允許 @使用者；擋掉 @everyone / @here / 身分組提及。
   allowedMentions: { parse: ['users'] },
@@ -27,6 +32,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
+    ...(AI_ENABLED ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : []),
   ]
 });
 
@@ -43,6 +49,12 @@ client.commands = new Collection();
 
 // ── 註冊模組處理器 ─────────────────────────────────────────
 setupAutoJoinCommands(client);
+
+if (AI_ENABLED) {
+  require('./handlers/ai/aiHandler').setupAICommands(client);
+} else {
+  bootSummary.report('AI 對話 (/ai)', 'off', '未設定 GEMINI_API_KEY，AI 功能停用');
+}
 
 // ── 音樂：指令與本地引擎在登入前就註冊 ────────────────────
 // 過去要等 clientReady 後才註冊 /play、/music，這段期間有人下指令會得到「找不到指令」。
@@ -155,5 +167,8 @@ client.on('error', error => {
 // ── 登入 ──────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN).catch(error => {
   logger.error('Discord', `登入失敗：${error.message}`);
+  if (AI_ENABLED && /disallowed intents/i.test(error.message)) {
+    logger.error('Discord', '已設定 GEMINI_API_KEY（AI 聊天需要 Message Content Intent）：請到 Discord Developer Portal → Bot 開啟 Message Content Intent，或移除 GEMINI_API_KEY 停用 AI');
+  }
   process.exit(1);
 });

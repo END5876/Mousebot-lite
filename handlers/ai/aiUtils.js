@@ -1,0 +1,626 @@
+// handlers/ai/aiUtils.js（精簡版）
+// 與正式版 Mousebot 的 aiUtils.js 相同，只拿掉 TTS（AI 回覆朗讀）相關的部分：
+// 精簡版沒有 TTS 模組，所以沒有 isAITTSEnabled / setAITTSEnabled / speakWithTTS。
+const logger = require('../../utils/logger');
+const sharp = require('sharp'); // 引入 sharp 進行圖片壓縮
+// 關閉 libvips 的 operation cache（預設最多 50MB）：每張圖只處理一次，結果已由下方 imageCache 快取，這層純屬重複
+sharp.cache(false);
+// 🔒 [安全性] 只允許 JPEG／PNG／WebP／GIF 的解碼器（整個程序生效）。
+// sharp 依「檔案內容」挑解碼器，不看 HTTP 的 Content-Type：標成 image/png 的 SVG 會交給 librsvg、
+// AVIF 交給 libheif、TIFF 交給 libtiff，這些解碼器都出過可遠端觸發的記憶體破壞漏洞，
+// 而 Bot 會解碼任何 Discord 使用者貼上的圖片，同一個程序又持有所有服務的金鑰。
+// 名稱是 libvips 的 operation 類別，Buffer 版本才用得到（這裡只從記憶體解碼）。
+sharp.block({ operation: ['VipsForeignLoad'] });
+sharp.unblock({ operation: ['VipsForeignLoadJpegBuffer', 'VipsForeignLoadPngBuffer', 'VipsForeignLoadWebpBuffer', 'VipsForeignLoadNsgifBuffer'] });
+const crypto = require('crypto');
+const dnsCallback = require('dns');
+const net = require('net');
+const http = require('http');
+const https = require('https');
+const { PermissionFlagsBits } = require('discord.js');
+
+// ════════════════════════════════════════════════════════
+//  設定常數
+// ════════════════════════════════════════════════════════
+const MAX_IMAGE_SIZE_MB = 30;
+const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const IMAGE_CACHE_MAX_ENTRIES = 40;          // 每筆最多約 1MB 級 base64，限制總量避免吃光記憶體
+const IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const IMAGE_MAX_REDIRECTS = 3;
+const EMOJI_MAX_SIZE_PX = 64;                // emoji 只需辨識表情，縮小以節省 token
+// 解碼時的像素上限（寬×高，動圖是所有影格加總）：小檔案也可能宣稱超大尺寸，解碼時吃光記憶體
+const MAX_INPUT_PIXELS = 40_000_000;
+const EMOJI_MAX_COUNT = 5;                   // 每則訊息最多送出的 emoji 圖片數，超過的只保留文字標記
+
+// ════════════════════════════════════════════════════════
+//  快取
+// ════════════════════════════════════════════════════════
+const imageCache = new Map();
+
+// 清除記憶的時間點（含頻道／成員層級）已移到 aiMemoryState.js，存在 data/aiMemoryState.json，
+// 重啟後仍有效；這裡 re-export 維持原本的呼叫方式
+const {
+    clearUserMemory, getMemoryClearTime,
+    clearChannelMemory, getChannelClearTime,
+    clearUserInChannel, getUserInChannelClearTime,
+} = require('./aiMemoryState');
+
+// ════════════════════════════════════════════════════════
+//  Bot 訊息上下文（AI 回覆紀錄）
+// ════════════════════════════════════════════════════════
+// 已移到 aiMessageLog.js，存在 data/aiMessageLog.json，重啟後人格隔離仍有效
+const { recordBotMessageContext, getBotMessageContext } = require('./aiMessageLog');
+
+// ════════════════════════════════════════════════════════
+//  Discord CDN 圖片網址修復機制 (新增)
+//  策略：① 優先重新 Fetch 訊息（免額外認證，成本低）
+//        ② 失敗才 Fallback 呼叫官方 refresh-urls API
+// ════════════════════════════════════════════════════════
+const ATTACHMENT_PATH_PATTERN = /cdn\.discordapp\.com\/attachments\/(\d+)\/(\d+)\/([^\s?<>"']+)/i;
+
+/**
+ * 策略一：重新 Fetch 該訊息，從 message.attachments / embeds 取得新鮮網址
+ * 原理：channel_id / message_id 寫在路徑上，不受簽名過期影響，
+ *       重新 fetch 訊息時 discord.js 回傳的網址保證是當下有效的。
+ * 權限：Bot 是用自己的權限去讀訊息，只憑網址上的 ID 就能讀到別的伺服器或私人頻道。
+ *       所以只修復「同一個伺服器、且發問者本人看得到」的頻道，否則交給 refresh-urls
+ *       （那條路要有完整的原始網址，等同發問者自己就能打開）。
+ */
+async function fetchFreshUrlFromMessage(url, client, viewer) {
+    if (!client || !viewer?.guildId || !viewer?.userId) return null;
+    const match = url.match(ATTACHMENT_PATH_PATTERN);
+    if (!match) return null;
+
+    const [, channelId, messageId, filename] = match;
+
+    try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel?.messages) return null;
+        if (channel.guildId !== viewer.guildId) return null;
+        const perms = channel.permissionsFor?.(viewer.userId);
+        if (!perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) return null;
+
+        const message = await channel.messages.fetch(messageId);
+        if (!message) return null;
+
+        const attachment = message.attachments.find(
+            a => a.name === filename || a.url.includes(filename)
+        );
+        if (attachment) return attachment.proxyURL ?? attachment.url;
+
+        // 附件被撤下但仍留有 Embed 縮圖時，退一步找 Embed
+        for (const embed of message.embeds) {
+            if (embed.image?.url?.includes(filename)) return embed.image.proxyURL ?? embed.image.url;
+            if (embed.thumbnail?.url?.includes(filename)) return embed.thumbnail.proxyURL ?? embed.thumbnail.url;
+        }
+
+        return null;
+    } catch (err) {
+        // 常見原因：頻道已刪除 / Bot 無權限 / 訊息已被刪除
+        logger.warn('resolveDiscordImageUrl', `Fetch 訊息失敗 (msg:${messageId}):`, err.message);
+        return null;
+    }
+}
+
+/**
+ * 策略二（Fallback）：呼叫官方 refresh-urls API
+ * 已知限制：
+ *   1. 必須帶有效的 User-Agent，否則請求可能被拒
+ *   2. ephemeral-attachments 路徑無效（本函式的正規表達式已排除此路徑）
+ *   3. 呼叫前必須先移除舊的 ?ex=&is=&hm= 參數
+ * 需求：process.env.DISCORD_TOKEN 必須是目前登入的 Bot Token
+ *       （若你的專案用不同變數名稱儲存 Token，請自行修改此處）
+ */
+async function refreshUrlViaAPI(url) {
+    if (!process.env.DISCORD_TOKEN) {
+        logger.warn('refreshUrlViaAPI', '未設定 DISCORD_TOKEN，無法呼叫官方 API');
+        return null;
+    }
+
+    const cleanUrl = url.split('?')[0]; // 移除舊簽名參數，只留路徑本體
+
+    try {
+        const res = await fetch('https://discord.com/api/v10/attachments/refresh-urls', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bot ${process.env.DISCORD_TOKEN}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'DiscordBot (https://github.com/discordjs/discord.js, 14.x)',
+            },
+            body: JSON.stringify({ attachment_urls: [cleanUrl] }),
+        });
+
+        if (!res.ok) {
+            logger.warn('refreshUrlViaAPI', `API 回應失敗: HTTP ${res.status}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const refreshed = data?.refreshed_urls?.[0]?.refreshed;
+        return refreshed || null;
+    } catch (err) {
+        logger.warn('refreshUrlViaAPI', '呼叫失敗:', err.message);
+        return null;
+    }
+}
+
+/**
+ * 主函式：綜合兩種策略，回傳一個「盡最大努力保證可用」的新鮮網址
+ * @param {string} url - 原始（缺簽名）的 Discord 圖片網址
+ * @param {import('discord.js').Client} client - discord.js Client 實例
+ * @param {{ guildId: string, userId: string }} [viewer] - 發問者；用來確認他本人看得到原訊息
+ * @returns {Promise<string|null>} 成功回傳新鮮網址，全部失敗回傳 null
+ */
+async function resolveDiscordImageUrl(url, client, viewer) {
+    const freshFromMessage = await fetchFreshUrlFromMessage(url, client, viewer);
+    if (freshFromMessage) {
+        logger.debug('resolveDiscordImageUrl', '✅ 透過重新 Fetch 訊息取得新鮮網址');
+        return freshFromMessage;
+    }
+
+    logger.debug('resolveDiscordImageUrl', '⚠️ Fetch 訊息失敗，改用 refresh-urls API 嘗試補救');
+    const freshFromAPI = await refreshUrlViaAPI(url);
+    if (freshFromAPI) {
+        logger.debug('resolveDiscordImageUrl', '✅ 透過 refresh-urls API 取得新鮮網址');
+        return freshFromAPI;
+    }
+
+    logger.warn('resolveDiscordImageUrl', '兩種策略皆失敗，該圖片確實無法存取');
+    return null;
+}
+
+
+// ════════════════════════════════════════════════════════
+//  安全下載圖片（防 SSRF / 逾時 / 超大檔）
+//  使用者訊息裡的任何圖片網址都會被 Bot 伺服器端抓取，
+//  若不限制，攻擊者可讓 Bot 去連內網服務（例如同專案的
+//  *.internal 私有網路服務、雲端 metadata 位址）。
+// ════════════════════════════════════════════════════════
+// 不允許連線的位址：私有網段、本機、link-local、CGNAT、保留與群播位址，以及會轉成 IPv4 的
+// IPv6 位址（NAT64 64:ff9b::/96、6to4 2002::/16，裡面可能包著內網 IPv4）
+const BLOCKED_NETS = new net.BlockList();
+for (const [addr, prefix] of [
+    ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+    ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4],
+]) BLOCKED_NETS.addSubnet(addr, prefix, 'ipv4');
+for (const [addr, prefix] of [
+    ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+    ['64:ff9b::', 96], ['64:ff9b:1::', 48], ['2002::', 16], ['100::', 64],
+]) BLOCKED_NETS.addSubnet(addr, prefix, 'ipv6');
+
+function isPrivateIp(ip) {
+    const v = String(ip || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (net.isIPv4(v)) return BLOCKED_NETS.check(v, 'ipv4');
+    if (net.isIPv6(v)) {
+        // IPv4-mapped（::ffff:10.0.0.1）一律用 IPv4 的規則判斷
+        const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+        if (mapped) return BLOCKED_NETS.check(mapped[1], 'ipv4');
+        return BLOCKED_NETS.check(v, 'ipv6');
+    }
+    return true;
+}
+
+function assertPublicHttpUrl(rawUrl) {
+    let u;
+    try { u = new URL(rawUrl); } catch { throw new Error('網址格式錯誤'); }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('不支援的協定');
+    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) {
+        throw new Error('不允許的主機');
+    }
+    if (net.isIP(host) && isPrivateIp(host)) throw new Error('不允許的主機');
+    return u;
+}
+
+// 🔒 [SSRF] 在「實際連線」的那一次 DNS 解析裡檢查位址：以前先 dns.lookup 檢查、再交給 fetch
+// 自己重新解析一次，攻擊者的 DNS（TTL=0）第一次回公開 IP、第二次回 127.0.0.1 就能繞過（DNS rebinding）。
+// 現在被檢查的位址就是 socket 連線的位址。網址本身是 IP 時 Node 不會呼叫 lookup，由 assertPublicHttpUrl 檢查。
+function guardedLookup(hostname, options, callback) {
+    dnsCallback.lookup(hostname, { ...options, all: true }, (err, addrs) => {
+        if (err) return callback(err);
+        if (!addrs.length || addrs.some(a => isPrivateIp(a.address))) {
+            return callback(Object.assign(new Error('不允許的主機'), { code: 'ESSRF' }));
+        }
+        return options.all ? callback(null, addrs) : callback(null, addrs[0].address, addrs[0].family);
+    });
+}
+
+// 一次 GET（不跟隨重新導向）；回傳 { redirect } 或 { buffer, contentType }
+function requestOnce(u, maxBytes) {
+    return new Promise((resolve, reject) => {
+        const mod = u.protocol === 'https:' ? https : http;
+        const req = mod.get(u, {
+            lookup: guardedLookup,
+            signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS),
+            headers: { 'user-agent': 'Mozilla/5.0 (compatible; Mousebot)', accept: 'image/*' },
+        }, (res) => {
+            const status = res.statusCode || 0;
+            if (status >= 300 && status < 400 && res.headers.location) {
+                res.resume();
+                return resolve({ redirect: res.headers.location });
+            }
+            if (status < 200 || status >= 300) {
+                res.resume();
+                return reject(new Error(`HTTP ${status}`));
+            }
+            const declared = Number(res.headers['content-length']);
+            if (declared && declared > maxBytes) {
+                res.destroy();
+                return reject(new Error('檔案過大'));
+            }
+            const chunks = [];
+            let total = 0;
+            res.on('data', (chunk) => {
+                total += chunk.length;
+                if (total > maxBytes) {
+                    res.destroy();
+                    reject(new Error('檔案過大'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            res.on('end', () => resolve({ buffer: Buffer.concat(chunks), contentType: res.headers['content-type'] || '' }));
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+    });
+}
+
+// 回傳 { buffer, contentType }；超過 maxBytes 或逾時一律丟錯。每一次重新導向都重新檢查。
+async function safeFetchBuffer(rawUrl, maxBytes) {
+    let current = rawUrl;
+    for (let hop = 0; hop <= IMAGE_MAX_REDIRECTS; hop++) {
+        const u = assertPublicHttpUrl(current);
+        const res = await requestOnce(u, maxBytes);
+        if (res.redirect) {
+            current = new URL(res.redirect, u).toString();
+            continue;
+        }
+        return res;
+    }
+    throw new Error('重新導向次數過多');
+}
+
+// ════════════════════════════════════════════════════════
+//  圖片處理 (支援網址解析與靜態圖/GIF 壓縮邏輯)
+// ════════════════════════════════════════════════════════
+
+// 🔒 依檔案開頭的 magic bytes 判斷格式，只接受 JPEG／PNG／GIF／WebP；其餘（SVG、AVIF、HEIC、TIFF…）回傳 null。
+// 不信任 HTTP 回應的 Content-Type：它由對方的伺服器決定，跟 sharp 實際會用的解碼器無關。
+function sniffImageType(buf) {
+    if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
+    if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+    if (buf.subarray(0, 8).equals(PNG_MAGIC)) return 'image/png';
+    const head = buf.subarray(0, 6).toString('latin1');
+    if (head === 'GIF87a' || head === 'GIF89a') return 'image/gif';
+    if (buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+    return null;
+}
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+async function fetchImageUrlAsBase64(url) {
+    const cached = imageCache.get(url);
+    if (cached && (Date.now() - cached.cachedAt) < IMAGE_CACHE_TTL_MS) {
+        logger.debug('Image', `快取命中：${url.slice(0, 60)}...`);
+        return { base64: cached.base64, mimeType: cached.mimeType };
+    }
+
+    try {
+        const sizeLimit = MAX_IMAGE_SIZE_MB * 1024 * 1024;
+        const { buffer: rawBuffer } = await safeFetchBuffer(url, sizeLimit);
+
+        // 格式以檔案內容為準（見 sniffImageType），認不出來就不解碼
+        const originalMimeType = sniffImageType(rawBuffer);
+        if (!originalMimeType) {
+            logger.debug('Image', `不支援的圖片格式，略過：${url.slice(0, 60)}...`);
+            return null;
+        }
+
+        let buffer = rawBuffer;
+        let finalMimeType = originalMimeType;
+
+        if (originalMimeType === 'image/gif') {
+            buffer = await sharp(buffer, { animated: true, limitInputPixels: MAX_INPUT_PIXELS })
+                .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+                .gif()
+                .toBuffer();
+            finalMimeType = 'image/gif';
+        } else {
+            buffer = await sharp(buffer, { limitInputPixels: MAX_INPUT_PIXELS })
+                .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+                .webp({ quality: 80 })
+                .toBuffer();
+            finalMimeType = 'image/webp';
+        }
+
+        const base64 = buffer.toString('base64');
+        if (imageCache.size >= IMAGE_CACHE_MAX_ENTRIES) imageCache.delete(imageCache.keys().next().value);
+        imageCache.set(url, { base64, mimeType: finalMimeType, cachedAt: Date.now() });
+        logger.debug('Image', `已下載並壓縮快取：${url.slice(0, 60)}...`);
+        return { base64, mimeType: finalMimeType };
+    } catch (err) {
+        logger.error('Image', `下載或壓縮圖片失敗：`, err.message);
+        return null;
+    }
+}
+
+async function fetchImageAsBase64(attachment) {
+    const sizeLimit = MAX_IMAGE_SIZE_MB * 1024 * 1024;
+    if (attachment.size && attachment.size > sizeLimit) return null;
+
+    // 附件宣告的類型只用來提早略過明顯不是圖片的檔案；真正的格式下載後由 sniffImageType 判斷
+    const supportedTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+    const originalMimeType = attachment.contentType?.split(';')[0] || 'image/jpeg';
+    if (originalMimeType && !supportedTypes.includes(originalMimeType)) return null;
+
+    // 優先使用 proxyURL（不需要安全簽名），fallback 才用 url
+    const fetchUrl = attachment.proxyURL ?? attachment.proxyUrl ?? attachment.url;
+    return await fetchImageUrlAsBase64(fetchUrl);
+}
+
+// 多張圖片並行下載＋壓縮；Promise.all 保留原本的附件順序
+async function processAttachments(attachments) {
+    if (!attachments || attachments.size === 0) return [];
+    const results = await Promise.all([...attachments.values()].map(fetchImageAsBase64));
+    return results
+        .filter(Boolean)
+        .map(imgData => ({ mimeType: imgData.mimeType, data: imgData.base64 }));
+}
+
+// 檢查是否包含缺少簽名的 Discord 網址
+function hasMissingSignature(content) {
+    if (!content) return false;
+    const urlRegex = /(https?:\/\/[^\s)\]>]+)/g;
+    const urls = content.match(urlRegex) || [];
+    for (const url of urls) {
+        if (url.includes('cdn.discordapp.com/attachments/')) {
+            const hasSig = url.includes('?ex=') && url.includes('&is=') && url.includes('&hm=');
+            if (!hasSig) return true;
+        }
+    }
+    return false;
+}
+
+// 處理 Discord Embeds (預覽圖)
+async function processEmbeds(embeds) {
+    if (!embeds || embeds.length === 0) return [];
+
+    const results = await Promise.all(embeds.map(embed => {
+        const imageUrl = embed.image?.proxyURL || embed.image?.url || embed.thumbnail?.proxyURL || embed.thumbnail?.url;
+        return imageUrl ? fetchImageUrlAsBase64(imageUrl) : null;
+    }));
+    return results
+        .filter(Boolean)
+        .map(imgData => ({ type: 'image', mimeType: imgData.mimeType, data: imgData.base64 }));
+}
+
+/**
+ * @param {string} content - 訊息文字內容
+ * @param {import('discord.js').Client} [client] - (選填) discord.js Client 實例
+ *        若有傳入，遇到缺簽名的 Discord 網址時會先嘗試自動修復，
+ *        修復成功則正常回傳圖片資料；修復失敗才回傳 missing_signature。
+ *        若不傳入 client，行為與修改前完全一致（向後相容）。
+ * @param {{ guildId: string, userId: string }} [viewer] - 發問者；重新讀取原訊息前會確認他看得到該頻道
+ */
+async function processImageUrls(content, client, viewer) {
+    if (!content) return [];
+
+    const urlRegex = /(https?:\/\/[^\s)\]>]+)/g;
+    const urls = [...new Set(content.match(urlRegex) || [])];
+
+    // 每個網址各自處理（並行），最後依網址出現順序組回結果；非圖片網址回傳 null
+    const processOne = async (url) => {
+        const isDiscordCDN = url.includes('cdn.discordapp.com/attachments/');
+        const hasSignature = url.includes('?ex=') && url.includes('&is=') && url.includes('&hm=');
+
+        const isLikelyImage = /\.(png|jpg|jpeg|webp|heic|heif|gif)(?:\?.*)?$/i.test(url)
+            || isDiscordCDN;
+
+        if (!isLikelyImage) return null;
+
+        // 缺簽名的 Discord CDN 網址：先嘗試修復，別急著判死刑
+        if (isDiscordCDN && !hasSignature) {
+            const freshUrl = await resolveDiscordImageUrl(url, client, viewer);
+
+            if (freshUrl) {
+                // ✅ 修復成功，當作正常圖片繼續處理
+                const imgData = await fetchImageUrlAsBase64(freshUrl);
+                if (imgData) return { type: 'image', mimeType: imgData.mimeType, data: imgData.base64 };
+            }
+
+            // 兩種策略皆失敗（或未傳入 client），才真的標記為缺簽名交給外部處理
+            return { type: 'missing_signature', url };
+        }
+
+        // 讀不到就安靜略過，不給模型「讀取失敗」的提示，免得它拿來吐槽
+        const imgData = await fetchImageUrlAsBase64(url);
+        return imgData ? { type: 'image', mimeType: imgData.mimeType, data: imgData.base64 } : null;
+    };
+
+    return (await Promise.all(urls.map(processOne))).filter(Boolean);
+}
+
+// ════════════════════════════════════════════════════════
+//  自訂 Emoji 處理
+// ════════════════════════════════════════════════════════
+async function fetchAndCacheEmoji(url, mimeType, name, id) {
+    try {
+        const cached = imageCache.get(url);
+        if (cached && (Date.now() - cached.cachedAt) < IMAGE_CACHE_TTL_MS) {
+            logger.debug('Emoji', `快取命中：${name}`);
+            return { mimeType: cached.mimeType, data: cached.base64 };
+        } else {
+            const response = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const rawBuffer = Buffer.from(await response.arrayBuffer());
+            if (!sniffImageType(rawBuffer)) throw new Error('不支援的圖片格式');
+            const isAnimated = mimeType === 'image/gif';
+            const resize = { width: EMOJI_MAX_SIZE_PX, height: EMOJI_MAX_SIZE_PX, fit: 'inside', withoutEnlargement: true };
+            const buffer = isAnimated
+                ? await sharp(rawBuffer, { animated: true, limitInputPixels: MAX_INPUT_PIXELS }).resize(resize).gif().toBuffer()
+                : await sharp(rawBuffer, { limitInputPixels: MAX_INPUT_PIXELS }).resize(resize).webp({ quality: 80 }).toBuffer();
+            const finalMimeType = isAnimated ? 'image/gif' : 'image/webp';
+            const base64 = buffer.toString('base64');
+            if (imageCache.size >= IMAGE_CACHE_MAX_ENTRIES) imageCache.delete(imageCache.keys().next().value);
+            imageCache.set(url, { base64, mimeType: finalMimeType, cachedAt: Date.now() });
+            logger.debug('Emoji', `已下載：${name} (${id})`);
+            return { mimeType: finalMimeType, data: base64 };
+        }
+    } catch (err) {
+        logger.warn('Emoji', `下載失敗 ${name}:`, err.message);
+        return null;
+    }
+}
+
+async function processCustomEmojis(content) {
+    if (!content) return { cleanedText: '', emojiParts: [] };
+
+    const emojiParts = [];
+    const seen = new Set();
+    const promises = [];
+
+    const cleanedText = content.replace(/<(a?):(\w+):(\d+)>/g, (match, animated, name, id) => {
+        if (!seen.has(id) && seen.size < EMOJI_MAX_COUNT) {
+            seen.add(id);
+            const ext = animated ? 'gif' : 'png';
+            const url = `https://cdn.discordapp.com/emojis/${id}.${ext}?size=${EMOJI_MAX_SIZE_PX}`;
+            const mimeType = animated ? 'image/gif' : 'image/png';
+            promises.push(fetchAndCacheEmoji(url, mimeType, name, id));
+        }
+        return `[${name}表情]`;
+    });
+
+    const results = await Promise.all(promises);
+    results.forEach(res => { if (res) emojiParts.push(res); });
+
+    return { cleanedText, emojiParts };
+}
+
+// ════════════════════════════════════════════════════════
+//  圖片去重：同一份內容（附件、網址圖、emoji 皆適用）只送一次
+// ════════════════════════════════════════════════════════
+// 以壓縮後的 base64 計算雜湊；圖片經過相同的 sharp 處理，內容相同的檔案
+// 即使 Discord 給的網址不同，結果也會一致。文字 part 不受影響。
+function dedupeInlineParts(parts) {
+    const seen = new Set();
+    let removed = 0;
+    const result = parts.filter(part => {
+        if (!part?.inlineData?.data) return true;
+        const hash = crypto.createHash('sha1').update(part.inlineData.data).digest('hex');
+        if (seen.has(hash)) { removed++; return false; }
+        seen.add(hash);
+        return true;
+    });
+    if (removed > 0) logger.debug('Image', `已移除 ${removed} 張重複圖片`);
+    return result;
+}
+
+// ════════════════════════════════════════════════════════
+//  定期清除過期快取
+// ════════════════════════════════════════════════════════
+setInterval(() => {
+    const now = Date.now();
+    let cleared = 0;
+    for (const [url, entry] of imageCache.entries()) {
+        if (now - entry.cachedAt >= IMAGE_CACHE_TTL_MS) { imageCache.delete(url); cleared++; }
+    }
+    if (cleared > 0) logger.debug('Image Cache', `已清除 ${cleared} 筆過期快取`);
+}, IMAGE_CACHE_TTL_MS);
+
+// ════════════════════════════════════════════════════════
+//  withTyping：持續顯示「正在輸入中」直到 asyncFn 結束
+// ════════════════════════════════════════════════════════
+async function withTyping(channel, asyncFn) {
+    let stop = false;
+    let wakeUp = null;
+
+    const typingLoop = async () => {
+        while (!stop) {
+            await channel.sendTyping().catch(() => {});
+            // asyncFn 可能在 sendTyping 途中就結束（此時 wakeUp 叫不醒這輪），要再檢查一次，否則會多睡 8 秒才回傳
+            if (stop) break;
+            await new Promise(res => {
+                wakeUp = res;
+                setTimeout(res, 8000);
+            });
+        }
+    };
+
+    const loopPromise = typingLoop();
+
+    try {
+        return await asyncFn();
+    } finally {
+        stop = true;
+        wakeUp?.();
+        await loopPromise.catch(() => {});
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  訊息分割
+// ════════════════════════════════════════════════════════
+function splitMessage(text, maxLength = 1900) {
+    if (text.length <= maxLength) return [text];
+    const chunks = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+        let chunk = remaining.slice(0, maxLength);
+        const lastNewLine = chunk.lastIndexOf('\n');
+        if (lastNewLine > maxLength * 0.8) {
+            chunk = remaining.slice(0, lastNewLine);
+            remaining = remaining.slice(lastNewLine + 1);
+        } else {
+            remaining = remaining.slice(maxLength);
+        }
+        chunks.push(chunk);
+    }
+    return chunks;
+}
+
+// ════════════════════════════════════════════════════════
+//  將提及 (Mentions) 轉換為純文字名稱
+// ════════════════════════════════════════════════════════
+function replaceMentions(message, botId) {
+    let text = message.content || '';
+    
+    // 1. 移除對機器人本身的提及
+    if (botId) {
+        text = text.replace(new RegExp(`<@!?${botId}>`, 'g'), '');
+    }
+    
+    // 2. 替換其他使用者、身分組、頻道為名稱
+    if (message.mentions) {
+        message.mentions.users?.forEach(user => {
+            if (user.id === botId) return;
+            text = text.replace(new RegExp(`<@!?${user.id}>`, 'g'), `@${user.username}`);
+        });
+        
+        message.mentions.roles?.forEach(role => {
+            text = text.replace(new RegExp(`<@&${role.id}>`, 'g'), `@${role.name}`);
+        });
+        
+        message.mentions.channels?.forEach(channel => {
+            text = text.replace(new RegExp(`<#${channel.id}>`, 'g'), `#${channel.name}`);
+        });
+    }
+    
+    return text.trim();
+}
+
+module.exports = {
+    clearUserMemory, getMemoryClearTime,
+    clearChannelMemory, getChannelClearTime,
+    clearUserInChannel, getUserInChannelClearTime,
+    recordBotMessageContext, getBotMessageContext,
+    processAttachments,
+    processCustomEmojis,
+    processImageUrls,
+    processEmbeds,
+    dedupeInlineParts,
+    hasMissingSignature, 
+    resolveDiscordImageUrl, 
+    withTyping, splitMessage,
+    replaceMentions,
+    sniffImageType,
+};
