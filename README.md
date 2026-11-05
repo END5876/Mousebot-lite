@@ -5,18 +5,21 @@ Mousebot 的精簡版，只保留這些功能：
 - **autojoin**：Bot 常駐在指定語音頻道，斷線自動重連（`/autojoin`）
 - **音樂**：本地音樂庫＋ YouTube / Bilibili 點歌、播放清單、循環／隨機連播、控制面板（`/play`、`/music`）
 - **AI 聊天（選用）**：正式版的「單一人格」群聊模式（`/ai`、@ 提及、隨機插話）。沒有設定 `GEMINI_API_KEY` 時完全不啟用
+- **管理 API（選用）**：給網頁管理面板 admin-panel 呼叫，和正式版在同一個面板上管理（見「管理面板」）。沒有設定 `ADMIN_AGENT_TOKEN` 時不啟動
 
 `handlers/` 與 `utils/` 的程式碼源自正式版 [Mousebot](https://github.com/END5876/Mousebot)，
-大部分檔案相同；少數檔案因為精簡版沒有管理面板、告警與心跳而刻意不同（見「從正式版同步」）。
+大部分檔案相同；少數檔案因為精簡版功能較少而刻意不同（見「從正式版同步」）。
 `index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
 
 ## 專案結構
 
 ```
 ├── index.js                          # 入口（autojoin + 音樂；有 GEMINI_API_KEY 時再載入 AI）
+├── admin/                            # 管理 API，給 admin-panel 呼叫（設定 ADMIN_AGENT_TOKEN 才啟動）
 ├── handlers/
 │   ├── autoJoinHandler.js            # /autojoin、斷線恢復
 │   ├── audioManager.js               # 音訊層管理（靜音防踢 / 音樂）
+│   ├── presenceHandler.js            # Bot 狀態文字（data/presence.json，管理面板可改）
 │   ├── musicplayer/                  # 音樂播放（線上 / 本地 / 佇列 / 快取 / 響度正規化 / 重啟後接續播放）
 │   └── ai/                           # AI 聊天（單一人格）：aiHandler 指令與訊息、aiCore 群組歷史與呼叫、persona 固定人格
 ├── utils/
@@ -49,6 +52,7 @@ Mousebot 的精簡版，只保留這些功能：
 | `TARGET_VOICE_CHANNEL_ID` | | 第一次啟動時的 autojoin 目標頻道；之後以 `/autojoin` 設定（存在 `data/autojoin.json`）為準 |
 | `GEMINI_API_KEY` | | 填了才啟用 AI 聊天；留空＝不啟用 |
 | `AI_PERSONA` | | AI 人格代號（預設 `bigfish`），讀 `data/prompts/modes/<代號>.md`，見下方「人格」 |
+| `ADMIN_AGENT_TOKEN` | | 填了才啟動管理 API（至少 32 字元，要和 admin-panel 的 `PANEL_TOKEN_<代號>` 相同），見「管理面板」 |
 
 其他選填項目（`LOG_LEVEL`、`DEV_GUILD_ID`、`HEALTH_PORT`、`MUSIC_RESUME`、AI 用量限制…）見 `.env.example`。
 
@@ -135,21 +139,30 @@ data/prompts/
 人格 prompt 要配合程式送給模型的格式：每則訊息開頭是 `【發言者：顯示名稱 (@帳號)】`，
 沒有其他身分標記，模型無法分辨誰是擁有者。
 
+## 管理面板
+
+網頁管理面板是獨立的服務 admin-panel，一個網頁同時管理正式版與精簡版。精簡版在面板上提供：
+總覽、語音與音樂（自動加入、點歌、播放控制、佇列、閒置自動停止）、狀態與訊息（Bot 狀態文字、以 Bot 身分發訊息）、
+維護（指令同步、下載快取、設定備份、重新啟動）、日誌；有設定 `GEMINI_API_KEY` 時另有 AI 用量。
+沒有手動加入／離開語音頻道（由 autojoin 管理）與喚醒詞，也沒有正式版的自訂回應、AI 人格、TTS、通知。
+
+- `.env` 設定 `ADMIN_AGENT_TOKEN`（至少 32 字元），容器裡再設 `ADMIN_HOST=0.0.0.0` 讓面板連進來；**不要讓這個 port 對外公開**。
+- 面板的 `PANEL_BOTS` 加上 `lite=http://mousebot-lite:3940`，並設定 `PANEL_TOKEN_LITE`（= 這裡的 `ADMIN_AGENT_TOKEN`）。
+- 容器以 `restart: unless-stopped` 執行時設 `RESTART_MANAGED=1`，面板的「重新啟動」按鈕才會顯示成重新啟動（而不是關閉）。
+- `admin/agent.js`、`admin/http.js`、`admin/discordInfo.js`、`admin/voiceState.js`、`admin/cacheTools.js`、
+  `admin/api/overview.js`、`admin/api/logs.js` 與正式版相同；`admin/api/` 其餘檔案是精簡版自己的版本。
+
 ## 從正式版同步
 
-`handlers/` 與 `utils/` 多數檔案和正式版相同，但**下列檔案不能直接覆蓋**，因為正式版多了精簡版沒有的管理面板／告警功能，
-覆蓋會讓精簡版 `require` 到不存在的模組：
+`handlers/`、`utils/` 與 `admin/` 多數檔案和正式版相同，但**下列檔案不能直接覆蓋**，因為正式版多了精簡版沒有的功能，
+覆蓋會讓精簡版 `require` 到不存在的模組，或改掉精簡版刻意不同的行為：
 
 | 檔案 | 與正式版的差異 |
 |---|---|
-| `handlers/autoJoinHandler.js` | 沒有管理面板用的 `getAutoJoinConfig` 等區段 |
-| `handlers/musicplayer/musicCache.js` | 少匯出 `SUPPORTED_EXTENSIONS`（管理面板用） |
-| `utils/bootSummary.js` | 少 `getItems` |
-| `utils/commandSync.js` | 少 `clientSyncOptions`、`getSyncStatus` |
-| `utils/health.js` | 少匯出 `collectHealth`、`discordWsStatus` |
-| `utils/logger.js` | 沒有給管理面板「日誌」頁用的最近 log 緩衝（`getRecent`） |
-| `utils/processGuards.js` | 沒有 `crashLog` 與管理面板的重新啟動 |
-| `utils/crashLog.js`、`heartbeat.js` | 精簡版沒有這兩個檔案 |
+| `handlers/presenceHandler.js` | 預設狀態文字是「正在聽 皮鼓」（`DEFAULT_PRESENCE`），其餘相同 |
+| `handlers/ai/aiChance.js` | 隨機回覆區段預設 `1/2`（正式版 `0/2`） |
+| `utils/heartbeat.js` | 精簡版沒有這個檔案 |
+| `admin/api/index.js`、`voice.js`、`system.js`、`ai.js` | 精簡版自己的版本（路由較少、回報的 `features` 不同、備份的檔案清單不同） |
 | `handlers/ai/aiHandler.js` | 精簡版自己的版本：只有 ask / clear / chance，單一人格 |
 | `handlers/ai/aiCore.js` | 由正式版精簡：只留群組歷史（單一人格），沒有多人格歷史、工具階段、語音；函式名稱與正式版一致，修正可對照同名函式手動套用 |
 | `handlers/ai/aiUtils.js` | 拿掉 TTS（`isAITTSEnabled`、`setAITTSEnabled`、`speakWithTTS`） |
@@ -162,7 +175,7 @@ data/prompts/
 
 ```bash
 # 在 Mousebot-lite 目錄；../Mousebot 是正式版
-for f in $(git ls-files handlers utils); do
+for f in $(git ls-files handlers utils admin); do
   diff -q --strip-trailing-cr "../Mousebot/$f" "$f" >/dev/null || echo "不同：$f"
 done
 ```

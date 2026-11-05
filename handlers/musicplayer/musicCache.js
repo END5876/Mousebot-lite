@@ -281,6 +281,7 @@ function safeUnlink(f) {
 module.exports = {
   CACHE_DIR,
   MAX_CACHE_SIZE_MB,
+  SUPPORTED_EXTENSIONS,
   isTempName,
   ensureCacheDir,
   getCacheFilename,

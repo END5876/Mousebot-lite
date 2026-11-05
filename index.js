@@ -8,6 +8,8 @@ const bootSummary = require('./utils/bootSummary');
 const { OWNER_USER_IDS } = require('./utils/config');
 const { syncCommands } = require('./utils/commandSync');
 const { startHealthServer } = require('./utils/health');
+const { startAgentServer } = require('./admin/agent');
+const { applyPresence } = require('./handlers/presenceHandler');
 
 // ── 導入處理器（精簡版：autojoin + 音樂 + 選用的單一人格 AI 聊天）──
 // handlers/ 與 utils/ 多數檔案與正式版 Mousebot 相同；刻意不同的檔案列在 README「從正式版同步」。
@@ -135,10 +137,8 @@ async function registerSlashCommands() {
 client.once('clientReady', async () => {
   logger.success('Discord', `已登入為 ${client.user.tag}（${client.guilds.cache.size} 個伺服器）`);
 
-  client.user.setPresence({
-    activities: [{ name: '皮鼓', type: 2 }],
-    status: 'online'
-  });
+  // 狀態文字可以在管理面板修改（data/presence.json），沒有設定時是「正在聽 皮鼓」
+  applyPresence(client);
 
   // 線上音樂引擎（含 yt-dlp / bgutil 檢查）與指令同步彼此獨立，並行處理
   await Promise.all([
@@ -158,6 +158,8 @@ client.once('clientReady', async () => {
 });
 
 startHealthServer(client);
+// 管理 API：給 admin-panel 服務呼叫（設定 ADMIN_AGENT_TOKEN 才會啟動）
+startAgentServer(client, require('./admin/api'));
 
 // ── 錯誤處理 ──────────────────────────────────────────────
 client.on('error', error => {

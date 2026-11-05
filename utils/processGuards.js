@@ -20,6 +20,7 @@
 //                        關閉時會等它完成，和 fatalHook 共用同一個 SHUTDOWN_TIMEOUT_MS 上限。
 
 const logger = require('./logger');
+const { recordCrash } = require('./crashLog');
 
 const SHUTDOWN_TIMEOUT_MS = 3000;
 
@@ -60,6 +61,8 @@ function install() {
 
   process.on('uncaughtException', (error, origin) => {
     logger.error('Process', `未捕捉的例外 (${origin})：`, error);
+    // 重啟後管理面板總覽還看得到上一次為什麼掛掉（data/lastCrash.json）
+    recordCrash(origin, error);
 
     if (process.env.EXIT_ON_UNCAUGHT === '0') return;
     if (exiting) return;
@@ -89,4 +92,20 @@ async function gracefulShutdown(signal) {
   process.exit(0);
 }
 
-module.exports = { install, setFatalHook, onShutdown };
+/**
+ * 主動要求關閉（管理面板的「重新啟動」）：流程與收到 SIGTERM 相同，
+ * 結束後由 supervisord（autorestart=true）重新啟動；沒有 supervisor 時就是單純關閉。
+ */
+function requestShutdown(reason) {
+  return gracefulShutdown(reason);
+}
+
+/**
+ * 結束後會不會有人自動重新啟動：supervisord 會在子程序的環境變數設定 SUPERVISOR_ENABLED；
+ * 直接當容器主程序（restart: unless-stopped）時由 compose 設定 RESTART_MANAGED=1
+ */
+function isSupervised() {
+  return !!process.env.SUPERVISOR_ENABLED || process.env.RESTART_MANAGED === '1';
+}
+
+module.exports = { install, setFatalHook, onShutdown, requestShutdown, isSupervised };
