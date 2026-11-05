@@ -32,6 +32,7 @@ const INDEX_MODE_MAX   = 60;                        // 張數不超過這個數�
 const HINT_TAG_COUNT   = 40;                        // 張數多時 prompt 列出的常用關鍵詞數
 const RECENT_AVOID     = 20;                        // 隨機挑選時避開最近送過的幾張
 const DOWNLOAD_TIMEOUT_MS = 20_000;
+const DOWNLOAD_BACKOFF_MS = 10 * 60 * 1000;         // 下載失敗後這段時間不再連圖庫網站，直接用已快取的圖（網站掛了也不拖慢回覆）
 const TAG_RE           = /[[［]\s*表情\s*[:：]\s*([^\]］\n]+?)\s*[\]］]/g;
 const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
 
@@ -53,6 +54,7 @@ const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash
 let cache = emptyCache();
 const recent = [];
 const inflight = new Map();
+let downloadBlockedUntil = 0;
 
 function memeDir() {
     return dataPath('memes', persona.getPersonaKey());
@@ -251,11 +253,24 @@ function extractMemes(text) {
     return { text: tidy, memes };
 }
 
-async function download(meme) {
-    const target = path.join(memeDir(), '.cache', `${meme.cacheKey}${meme.ext}`);
+function cachePath(meme) {
+    return path.join(memeDir(), '.cache', `${meme.cacheKey}${meme.ext}`);
+}
+
+/** 本機已經有的圖檔（直接放的圖，或已下載過的快取）；沒有回傳 null */
+function localFile(meme) {
+    if (meme.file) return meme.file;
     try {
-        if (fs.statSync(target).size > 0) return target;
-    } catch { /* 還沒快取 */ }
+        const target = cachePath(meme);
+        return fs.statSync(target).size > 0 ? target : null;
+    } catch { return null; }
+}
+
+async function download(meme) {
+    const target = cachePath(meme);
+    const local = localFile(meme);
+    if (local) return local;
+    if (Date.now() < downloadBlockedUntil) throw new Error('圖庫網站暫時連不上，先不下載');
     if (inflight.has(target)) return inflight.get(target);
 
     const job = (async () => {
@@ -269,9 +284,19 @@ async function download(meme) {
         await fs.promises.rename(tmp, target);
         logger.debug('Meme', `已下載：${meme.name}`);
         return target;
-    })().finally(() => inflight.delete(target));
+    })().catch((err) => {
+        downloadBlockedUntil = Date.now() + DOWNLOAD_BACKOFF_MS;
+        throw err;
+    }).finally(() => inflight.delete(target));
     inflight.set(target, job);
     return job;
+}
+
+/** 下載失敗時的替代：同情緒、本機已經有的圖（隨機、避開最近送過的）；都沒有回傳 null */
+function cachedSubstitute(meme) {
+    const { list } = load();
+    const sameEmotion = meme.emotion ? list.filter(m => m !== meme && m.emotion === meme.emotion && localFile(m)) : [];
+    return pickRandom(sameEmotion);
 }
 
 /**
@@ -285,8 +310,11 @@ async function toFiles(memes) {
             const file = meme.file ?? await download(meme);
             return { attachment: file, name: `meme-${meme.hash}${meme.ext}` };
         } catch (err) {
-            logger.warn('Meme', `表情包「${meme.name}」下載失敗：${err.message}`);
-            return null;
+            const sub = cachedSubstitute(meme);
+            logger.warn('Meme', `表情包「${meme.name}」下載失敗：${err.message}${sub ? `，改送已快取的「${sub.name}」` : ''}`);
+            if (!sub) return null;
+            remember(sub);
+            return { attachment: localFile(sub), name: `meme-${sub.hash}${sub.ext}` };
         }
     }));
     return files.filter(Boolean);
@@ -325,7 +353,7 @@ module.exports = {
     _internal: {
         hashId,
         normalize,
-        resetCache: () => { cache = emptyCache(); recent.length = 0; },
+        resetCache: () => { cache = emptyCache(); recent.length = 0; downloadBlockedUntil = 0; },
         INDEX_MODE_MAX,
     },
 };

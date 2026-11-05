@@ -94,6 +94,27 @@ test('繁體關鍵詞先轉簡體再比對；英文不分大小寫', () => {
   assert.deepEqual(r.memes.map(m => m.name), ['摸鱼']);
 });
 
+test('圖庫網站連不上：改送同情緒、已快取的圖；之後一段時間不再連線', async () => {
+  const down = 'https://127.0.0.1:1/x.gif';          // 連不上的位址，不打外部網路
+  reset({
+    'memes.json': kit([
+      { id: 'p/a', name: '没下载过', emotion: '开心', url: down, hash: '111111111111' },
+      { id: 'p/b', name: '已快取', emotion: '开心', url: down, hash: '222222222222' },
+      { id: 'p/c', name: '别的情绪', emotion: '生气', url: down, hash: '333333333333' },
+    ]),
+  });
+  fs.mkdirSync(path.join(DIR, '.cache'));
+  fs.writeFileSync(path.join(DIR, '.cache', '222222222222.gif'), 'gif');
+
+  const [file] = await memeStore.toFiles([memeStore.resolveMeme('没下载过')]);
+  assert.equal(file.attachment, path.join(DIR, '.cache', '222222222222.gif'));
+
+  // 同情緒沒有快取 → 不送圖；而且退避期間不再嘗試下載（立刻回來）
+  const t0 = Date.now();
+  assert.deepEqual(await memeStore.toFiles([memeStore.resolveMeme('别的情绪')]), []);
+  assert.ok(Date.now() - t0 < 1000);
+});
+
 test('套組很多張時 prompt 只列情緒與常用關鍵詞', () => {
   const many = Array.from({ length: memeStore._internal.INDEX_MODE_MAX + 1 }, (_, i) => ({
     id: `p/${i}`, name: `图${i}`, emotion: i % 2 ? '开心' : '生气', tags: ['摸鱼'], url: `https://example.com/${i}.gif`,
