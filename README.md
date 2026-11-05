@@ -143,13 +143,13 @@ data/prompts/
 
 網頁管理面板是獨立的服務 admin-panel，一個網頁同時管理正式版與精簡版。精簡版在面板上提供：
 總覽、語音與音樂（自動加入、點歌、播放控制、佇列、閒置自動停止）、狀態與訊息（Bot 狀態文字、以 Bot 身分發訊息）、
-維護（指令同步、下載快取、設定備份、重新啟動）、日誌；有設定 `GEMINI_API_KEY` 時另有 AI 用量。
-沒有手動加入／離開語音頻道（由 autojoin 管理）與喚醒詞，也沒有正式版的自訂回應、AI 人格、TTS、通知。
+維護（指令同步、下載快取、設定備份與還原、重新啟動）、日誌；有設定 `GEMINI_API_KEY` 時另有 AI 人格（編輯 `AI_PERSONA` 的人格檔與 `_general`、`_group` 規則，含版本紀錄；沒有人格檔時可以從內建人格建立）、AI 設定（模型與額度、人格、隨機插話機率與頻道開關、清除頻道的對話記憶）與 AI 用量。
+沒有手動加入／離開語音頻道（由 autojoin 管理）與喚醒詞，也沒有正式版的自訂回應、新增／刪除人格、使用者人格與範圍、TTS、通知。
 
 - `.env` 設定 `ADMIN_AGENT_TOKEN`（至少 32 字元），容器裡再設 `ADMIN_HOST=0.0.0.0` 讓面板連進來；**不要讓這個 port 對外公開**。
 - 面板的 `PANEL_BOTS` 加上 `lite=http://mousebot-lite:3940`，並設定 `PANEL_TOKEN_LITE`（= 這裡的 `ADMIN_AGENT_TOKEN`）。
 - 容器以 `restart: unless-stopped` 執行時設 `RESTART_MANAGED=1`，面板的「重新啟動」按鈕才會顯示成重新啟動（而不是關閉）。
-- `admin/agent.js`、`admin/http.js`、`admin/discordInfo.js`、`admin/voiceState.js`、`admin/cacheTools.js`、
+- `admin/agent.js`、`admin/backup.js`、`admin/http.js`、`admin/discordInfo.js`、`admin/voiceState.js`、`admin/cacheTools.js`、
   `admin/api/overview.js`、`admin/api/logs.js` 與正式版相同；`admin/api/` 其餘檔案是精簡版自己的版本。
 
 ## 從正式版同步
@@ -162,7 +162,7 @@ data/prompts/
 | `handlers/presenceHandler.js` | 預設狀態文字是「正在聽 皮鼓」（`DEFAULT_PRESENCE`），其餘相同 |
 | `handlers/ai/aiChance.js` | 隨機回覆區段預設 `1/2`（正式版 `0/2`） |
 | `utils/heartbeat.js` | 精簡版沒有這個檔案 |
-| `admin/api/index.js`、`voice.js`、`system.js`、`ai.js` | 精簡版自己的版本（路由較少、回報的 `features` 不同、備份的檔案清單不同） |
+| `admin/api/index.js`、`voice.js`、`system.js`、`ai.js`、`prompts.js` | 精簡版自己的版本（路由較少、回報的 `features` 不同、備份的檔案清單不同、單一人格） |
 | `handlers/ai/aiHandler.js` | 精簡版自己的版本：只有 ask / clear / chance，單一人格 |
 | `handlers/ai/aiCore.js` | 由正式版精簡：只留群組歷史（單一人格），沒有多人格歷史、工具階段、語音；函式名稱與正式版一致，修正可對照同名函式手動套用 |
 | `handlers/ai/aiUtils.js` | 拿掉 TTS（`isAITTSEnabled`、`setAITTSEnabled`、`speakWithTTS`） |
