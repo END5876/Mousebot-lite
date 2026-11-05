@@ -133,6 +133,28 @@ test('候選太少時併入「包含」的', () => {
   assert.equal(memeStore.resolveMeme('别惹').name, '我要咬他');
 });
 
+test('引用 Bot 自己的表情包：換成 [表情:名字]，不下載圖片', async () => {
+  reset({ 'memes.json': kit(KIT) });
+  const hash = memeStore._internal.hashId('p/1N01_摸鱼');
+  let touched = false;
+  const memeAtt = { name: `meme-${hash}.gif`, get url() { touched = true; return 'https://127.0.0.1:1/x.gif'; } };
+  const refMsg = {
+    id: 'REF', author: { id: 'BOT', bot: true, username: 'bot' }, member: null, content: '',
+    attachments: new Map([['a', memeAtt]]), embeds: [],
+    mentions: { users: new Map(), roles: new Map(), channels: new Map(), repliedUser: null },
+  };
+  const message = {
+    id: 'CUR', author: { id: 'U', bot: false, username: 'u' }, member: null, content: '笑死',
+    reference: { messageId: 'REF' }, embeds: [], attachments: new Map(),
+    mentions: { users: new Map(), roles: new Map(), channels: new Map(), repliedUser: null },
+    channel: { messages: { fetch: async () => refMsg } },
+  };
+  const parts = await _internal.buildMessagePartsWithReference(message, '笑死', [], 'BOT', 'U');
+  assert.ok(parts.every(p => !p.inlineData));
+  assert.match(parts[0].text, /\[表情:摸鱼\]/);
+  assert.equal(touched, false);
+});
+
 test('套組很多張時 prompt 只列情緒與常用關鍵詞', () => {
   const many = Array.from({ length: memeStore._internal.INDEX_MODE_MAX + 1 }, (_, i) => ({
     id: `p/${i}`, name: `图${i}`, emotion: i % 2 ? '开心' : '生气', tags: ['摸鱼'], url: `https://example.com/${i}.gif`,

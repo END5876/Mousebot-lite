@@ -481,9 +481,11 @@ async function buildMessagePartsWithReference(message, question, imageParts, bot
         const refContent = refMedia.text ? escapeLabelBrackets(refMedia.text) : refMedia.text;
         const refNotes   = [];
 
-        // 處理實體附件
-        if (refMsg.attachments.size > 0) {
-            const refImageParts = await processAttachments(refMsg.attachments);
+        // 處理實體附件；引用的是 Bot 自己的表情包時換成 [表情:名字]，不重新下載圖片給模型看（省 token）
+        const { attachments: refAttachments, memeTags: refMemeTags } = splitMemeAttachments(refMsg, botId);
+        refNotes.push(...refMemeTags);
+        if (refAttachments?.size > 0) {
+            const refImageParts = await processAttachments(refAttachments);
             refImageParts.forEach(img =>
                 parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } })
             );
