@@ -28,6 +28,7 @@ const {
 const {
     DEFAULT_CHANCE,
     getReplyChance,
+    shouldRandomReply,
     setReplyChance,
     resetReplyChance,
     isChannelDisabled,
@@ -349,7 +350,7 @@ async function handleRandomReply(message, client, { hasAttachment, hasReference,
     // 只要訊息含有任何連結（包含圖片連結），隨機回覆一律不回應
     if (/(https?:\/\/[^\s)\]>]+)|(www\.[^\s)\]>]+)/i.test(rawCleaned)) return;
 
-    if (Math.random() >= getReplyChance(message.guild?.id)) return;
+    if (!shouldRandomReply(message.id, getReplyChance(message.guild?.id))) return;
 
     try {
         const shortReply = await withTyping(message.channel, async () => {
