@@ -326,6 +326,25 @@ async function download(meme) {
     return job;
 }
 
+function smallPath(meme) {
+    return path.join(memeDir(), '.cache', SMALL_DIR, `${fileKey(meme)}${meme.ext}`);
+}
+
+/**
+ * 已經做好、可以直接送的縮小版；沒有回傳 null。
+ * 套組的圖只要縮小版在就好，原圖可以刪（省空間，要重做再從 url 下載）；直接放的圖被換掉（原圖比縮小版新）就不算。
+ */
+function readySmall(meme) {
+    if (!DISPLAY_SIZE && !publicBase()) return null;
+    const target = smallPath(meme);
+    try {
+        const st = fs.statSync(target);
+        if (!(st.size > 0)) return null;
+        if (meme.file && st.mtimeMs < fs.statSync(meme.file).mtimeMs) return null;
+        return target;
+    } catch { return null; }
+}
+
 /**
  * 送出用的版本（動畫保留），放在 .cache/<SMALL_DIR>/：長邊超過 DISPLAY_SIZE 就縮，沒超過就原樣複製
  * （網址模式要求每張都在這個資料夾）。沒設 DISPLAY_SIZE 也沒設公開網址、或處理失敗時回傳原圖路徑。
@@ -333,7 +352,7 @@ async function download(meme) {
  */
 async function shrink(src, meme) {
     if (!DISPLAY_SIZE && !publicBase()) return src;
-    const target = path.join(memeDir(), '.cache', SMALL_DIR, `${fileKey(meme)}${meme.ext}`);
+    const target = smallPath(meme);
     try {
         const [srcStat, outStat] = await Promise.all([
             fs.promises.stat(src),
@@ -375,7 +394,9 @@ async function shrink(src, meme) {
 /** 下載失敗時的替代：同情緒、本機已經有的圖（隨機、避開最近送過的）；都沒有回傳 null */
 function cachedSubstitute(meme) {
     const { list } = load();
-    const sameEmotion = meme.emotion ? list.filter(m => m !== meme && m.emotion === meme.emotion && localFile(m)) : [];
+    const sameEmotion = meme.emotion
+        ? list.filter(m => m !== meme && m.emotion === meme.emotion && (readySmall(m) || localFile(m)))
+        : [];
     return pickRandom(sameEmotion);
 }
 
@@ -389,12 +410,15 @@ function toSendable(file, meme) {
 }
 
 /**
- * 表情包 → 要送出的圖（網址或附件，見 toSendable）；遠端的先下載（失敗就改送已快取的同情緒圖，都沒有就略過，不影響文字回覆）
+ * 表情包 → 要送出的圖（網址或附件，見 toSendable）。縮小版已經有就直接用（不需要原圖）；
+ * 沒有才取原圖（遠端的先下載）再縮。下載失敗就改送已快取的同情緒圖，都沒有就略過，不影響文字回覆。
  * @param {Meme[]} memes
  * @returns {Promise<({ url: string } | { attachment: string, name: string })[]>}
  */
 async function toFiles(memes) {
     const files = await Promise.all(memes.map(async (meme) => {
+        const ready = readySmall(meme);
+        if (ready) return toSendable(ready, meme);
         try {
             const file = meme.file ?? await download(meme);
             return toSendable(await shrink(file, meme), meme);
@@ -403,7 +427,7 @@ async function toFiles(memes) {
             logger.warn('Meme', `表情包「${meme.name}」下載失敗：${err.message}${sub ? `，改送已快取的「${sub.name}」` : ''}`);
             if (!sub) return null;
             remember(sub);
-            return toSendable(await shrink(localFile(sub), sub), sub);
+            return toSendable(readySmall(sub) ?? await shrink(localFile(sub), sub), sub);
         }
     }));
     return files.filter(Boolean);

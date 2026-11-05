@@ -219,6 +219,24 @@ test('網址模式：大圖縮小、小圖原樣複製，都放進 small-<px>/ �
   });
 });
 
+test('原圖刪掉、只剩縮小版：直接用縮小版，不重新下載', async () => {
+  const down = 'https://127.0.0.1:1/x.gif';          // 真的去下載就會失敗
+  reset({ 'memes.json': kit([{ id: 'p/a', name: '只剩小图', emotion: '开心', url: down, hash: '444444444444' }]) });
+  fs.mkdirSync(path.join(DIR, '.cache', 'small-160'), { recursive: true });
+  const small = path.join(DIR, '.cache', 'small-160', '444444444444.gif');
+  fs.writeFileSync(small, 'gif');
+
+  await withPublicUrl('https://meme.example.com', async () => {
+    assert.deepEqual(await memeStore.toFiles([memeStore.resolveMeme('只剩小图')]),
+      [{ url: 'https://meme.example.com/bigfish/small-160/444444444444.gif' }]);
+  });
+  await withPublicUrl(undefined, async () => {
+    const [f] = await memeStore.toFiles([memeStore.resolveMeme('只剩小图')]);
+    assert.equal(f.attachment, small);
+  });
+  assert.ok(!fs.existsSync(path.join(DIR, '.cache', '444444444444.gif')));
+});
+
 test('網址模式：Bot 自己發的表情包網址還原成名字，引用時不抓網址預覽', async () => {
   reset({ 'memes.json': kit(KIT) });
   await withPublicUrl('https://meme.example.com', async () => {

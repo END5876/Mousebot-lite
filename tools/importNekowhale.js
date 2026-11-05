@@ -53,13 +53,16 @@ function gifUrl(manifest, item) {
 
 async function prefetch(dir, stickers) {
     const cacheDir = path.join(dir, '.cache');
+    // 已經有送出用縮小版（memeStore 的 .cache/small-<px>/）的就不用原圖了——原圖可能是刻意刪掉省空間的，不要再抓回來
+    const smallSize = Number.parseInt(process.env.MEME_DISPLAY_SIZE ?? '', 10);
+    const smallDir = path.join(cacheDir, `small-${Number.isFinite(smallSize) && smallSize >= 0 ? (smallSize || 'orig') : 160}`);
     fs.mkdirSync(cacheDir, { recursive: true });
     let done = 0, skipped = 0, failed = 0;
     const queue = [...stickers];
     const worker = async () => {
         for (let s = queue.shift(); s; s = queue.shift()) {
             const target = path.join(cacheDir, `${s.hash}.gif`);
-            if (fs.existsSync(target)) { skipped++; continue; }
+            if (fs.existsSync(target) || fs.existsSync(path.join(smallDir, `${s.hash}.gif`))) { skipped++; continue; }
             try {
                 const res = await fetch(s.url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(60_000) });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
