@@ -36,7 +36,7 @@ const {
 } = require('./aiChance');
 
 const persona = require('./persona');
-const { buildPayloads } = require('./memeStore');
+const { buildPayloads, listMemes } = require('./memeStore');
 const bootSummary = require('../../utils/bootSummary');
 const { isOwner } = require('../../utils/config');
 const { isQuotaError, quotaMessage, describeLimits } = require('./aiQuota');
@@ -179,12 +179,16 @@ async function handleAsk(interaction) {
 
         // 表情包附件跟在最後一塊文字上；只有圖時 payloads 只有一個 { files }
         const [first, ...rest] = buildPayloads(chunks, files);
-        const replyMsg = await interaction.editReply(first);
+        const replyMsg = await sendWithMemeFallback(p => interaction.editReply(p), first);
+        if (!replyMsg) {
+            await interaction.deleteReply().catch(() => {});
+            return;
+        }
         recordBotMessageContext(replyMsg.id, mode, userId, userName, logExtra);
 
         for (const payload of rest) {
-            const followUpMsg = await interaction.followUp({ ...payload, fetchReply: true });
-            recordBotMessageContext(followUpMsg.id, mode, userId, userName, logExtra);
+            const followUpMsg = await sendWithMemeFallback(p => interaction.followUp({ ...p, fetchReply: true }), payload);
+            if (followUpMsg) recordBotMessageContext(followUpMsg.id, mode, userId, userName, logExtra);
         }
     } catch (error) {
         if (isQuotaError(error)) {
@@ -276,11 +280,26 @@ async function handleChanceSet(interaction) {
 // ════════════════════════════════════════════════════════
 //  訊息處理：@ 提及、隨機插話
 // ════════════════════════════════════════════════════════
+/**
+ * 送出一則；帶表情包附件失敗（沒有「附加檔案」權限、檔案太大…）時改送純文字，不讓圖片拖垮整則回覆。
+ * 只有圖、沒有文字的那則失敗就放棄（回傳 null）。
+ */
+async function sendWithMemeFallback(send, payload) {
+    try {
+        return await send(payload);
+    } catch (err) {
+        if (!payload.files) throw err;
+        logger.warn('Meme', `表情包送出失敗（${err.code ?? ''} ${err.message}），改送純文字`);
+        if (!payload.content) return null;
+        return send({ content: payload.content });
+    }
+}
+
 async function sendChunks(message, { chunks, files }, scope) {
     const logExtra = { kind: scope.kind, scopeKey: scope.scopeKey };
     for (const payload of buildPayloads(chunks, files)) {
-        const sentMsg = await message.channel.send(payload);
-        recordBotMessageContext(sentMsg.id, scope.persona, message.author.id, message.author.username, logExtra);
+        const sentMsg = await sendWithMemeFallback(p => message.channel.send(p), payload);
+        if (sentMsg) recordBotMessageContext(sentMsg.id, scope.persona, message.author.id, message.author.username, logExtra);
     }
 }
 
@@ -392,6 +411,12 @@ function setupAICommands(client) {
         hasFile ? 'ok' : 'warn',
         `Gemini (${MODEL_NAME}) 單一人格；${personaText}；額度：${describeLimits()}；` +
         `搜尋接地：${SEARCH_GUILD_IDS.size ? `${SEARCH_GUILD_IDS.size} 個伺服器` : '停用'}`
+    );
+    const memeCount = listMemes().length;
+    bootSummary.report(
+        'AI 表情包',
+        memeCount ? 'ok' : 'off',
+        memeCount ? `${memeCount} 張` : `沒有圖庫（data/memes/${persona.getPersonaKey()}/），要用請跑 node tools/importNekowhale.js`
     );
 
     client.on('messageCreate', async message => {
