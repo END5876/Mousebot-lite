@@ -9,7 +9,7 @@
 //      圖片用到時才從 url 下載，快取在 .cache/<hash>.<副檔名>。
 //      大肥魚表情包用 `node tools/importNekowhale.js` 產生（見 README）。
 //
-// 解析 [表情:關鍵詞]：名字完全相同 → 情緒 → 標籤 → 名字／標籤／用途包含關鍵詞，同分的隨機挑，
+// 解析 [表情:關鍵詞]（兩邊先繁轉簡、英文轉小寫再比）：名字完全相同 → 情緒 → 標籤 → 名字／標籤／用途包含關鍵詞，同分的隨機挑，
 // 最近送過的盡量避開。張數少（≤ INDEX_MODE_MAX）時 prompt 列出每一張；多的時候只列情緒與常用關鍵詞。
 // 資料夾不存在或沒有圖時整個功能關閉。增刪檔案不用重啟（每 RELOAD_CHECK_MS 重新掃描）。
 //
@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const logger = require('../../utils/logger');
 const { dataPath } = require('../../utils/dataDir');
 const persona = require('./persona');
+const T2S_PAIRS = require('./t2sTable');
 
 const RELOAD_CHECK_MS  = 5000;
 const IMAGE_EXTS       = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -48,7 +49,7 @@ const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
  * @property {string} cacheKey 快取檔名
  */
 
-const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], byHash: new Map(), byName: new Map(), prompt: '' });
+const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), byName: new Map(), prompt: '' });
 let cache = emptyCache();
 const recent = [];
 const inflight = new Map();
@@ -62,6 +63,22 @@ function hashId(id) {
 }
 
 const clean = s => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
+
+// 繁 → 簡單字對照（OpenCC TSCharacters）。表情包資料是簡體，模型跟著群組講繁體時會寫 [表情:摸魚]，
+// 比對前兩邊都轉成簡體＋英文小寫，字形不同也對得到
+const T2S = (() => {
+    const chars = Array.from(T2S_PAIRS);
+    const map = new Map();
+    for (let i = 0; i + 1 < chars.length; i += 2) map.set(chars[i], chars[i + 1]);
+    return map;
+})();
+
+/** 比對用的正規化：繁轉簡、英文轉小寫、去掉多餘空白 */
+function normalize(s) {
+    let out = '';
+    for (const ch of clean(s)) out += T2S.get(ch) ?? ch;
+    return out.toLowerCase();
+}
 
 function readManifest(dir) {
     try {
@@ -158,7 +175,12 @@ function load() {
     cache = {
         dir, checkedAt: now, list,
         byHash: new Map(list.map(m => [m.hash, m])),
-        byName: new Map(list.map(m => [m.name, m])),
+        // 比對用的正規化欄位（繁轉簡、小寫），掃描時算一次
+        index: list.map(m => ({
+            meme: m, name: normalize(m.name), emotion: normalize(m.emotion),
+            tags: m.tags.map(normalize), use: normalize(m.use),
+        })),
+        byName: new Map(list.map(m => [normalize(m.name), m])),
         prompt: buildPrompt(list),
     };
     if (list.length !== prevSize && list.length > 0) logger.info('Meme', `已載入 ${list.length} 張表情包（${dir}）`);
@@ -183,17 +205,17 @@ function pickRandom(candidates) {
 
 /** 關鍵詞 → 一張表情包；找不到回傳 null */
 function resolveMeme(keyword) {
-    const q = clean(keyword);
+    const q = normalize(keyword);
     if (!q) return null;
-    const { list, byName } = load();
+    const { index, byName } = load();
     if (byName.has(q)) return byName.get(q);
     const tiers = [
-        m => m.emotion === q,
-        m => m.tags.includes(q),
-        m => m.name.includes(q) || m.tags.some(t => t.includes(q) || (t.length >= 2 && q.includes(t))) || m.use.includes(q),
+        e => e.emotion === q,
+        e => e.tags.includes(q),
+        e => e.name.includes(q) || e.tags.some(t => t.includes(q) || (t.length >= 2 && q.includes(t))) || e.use.includes(q),
     ];
     for (const match of tiers) {
-        const hit = pickRandom(list.filter(match));
+        const hit = pickRandom(index.filter(match).map(e => e.meme));
         if (hit) return hit;
     }
     return null;
@@ -221,7 +243,7 @@ function extractMemes(text) {
         }
         return '';
     });
-    if (unknown.length) logger.debug('Meme', `找不到表情包：${unknown.join('、')}`);
+    if (unknown.length) logger.info('Meme', `找不到表情包：${unknown.join('、')}`);
     const tidy = cleaned
         .split('\n').map(line => line.replace(/[ \t]+$/, '')).join('\n')
         .replace(/\n{3,}/g, '\n\n')
@@ -302,6 +324,7 @@ module.exports = {
     MAX_PER_REPLY,
     _internal: {
         hashId,
+        normalize,
         resetCache: () => { cache = emptyCache(); recent.length = 0; },
         INDEX_MODE_MAX,
     },

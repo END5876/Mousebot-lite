@@ -83,6 +83,17 @@ test('套組清單：略過沒網址／非 https 的項目，依名字 → 情�
   assert.equal(memeStore.resolveMeme('完全沒有'), null);
 });
 
+test('繁體關鍵詞先轉簡體再比對；英文不分大小寫', () => {
+  assert.equal(memeStore._internal.normalize(' 摸魚 開心 生氣 ABC '), '摸鱼 开心 生气 abc');
+  reset({ 'memes.json': kit(KIT) });
+  assert.equal(memeStore.resolveMeme('摸魚').name, '摸鱼');          // 名字
+  assert.equal(memeStore.resolveMeme('生氣').name, '我要咬他');      // 情緒
+  assert.equal(memeStore.resolveMeme('圍觀').name, '吃瓜');          // 標籤
+  assert.equal(memeStore.resolveMeme('偷懶時').name, '摸鱼');        // 用途包含
+  const r = memeStore.extractMemes('笑死\n[表情:摸魚]');
+  assert.deepEqual(r.memes.map(m => m.name), ['摸鱼']);
+});
+
 test('套組很多張時 prompt 只列情緒與常用關鍵詞', () => {
   const many = Array.from({ length: memeStore._internal.INDEX_MODE_MAX + 1 }, (_, i) => ({
     id: `p/${i}`, name: `图${i}`, emotion: i % 2 ? '开心' : '生气', tags: ['摸鱼'], url: `https://example.com/${i}.gif`,
