@@ -36,6 +36,7 @@ const {
 } = require('./aiChance');
 
 const persona = require('./persona');
+const { buildPayloads } = require('./memeStore');
 const bootSummary = require('../../utils/bootSummary');
 const { isOwner } = require('../../utils/config');
 const { isQuotaError, quotaMessage, describeLimits } = require('./aiQuota');
@@ -170,17 +171,19 @@ async function handleAsk(interaction) {
             part.type === 'missing_signature' ? { type: 'text', text: MISSING_SIGNATURE_HINT } : part
         );
 
-        const { chunks } = await getGeminiResponse({
+        const { chunks, files } = await getGeminiResponse({
             userId, prompt: question, imageParts: [...emojiParts, ...urlImageParts, ...attachmentParts],
             channel: interaction.channel, messageId: interaction.id, botId, scope,
             userName: labelOf(interaction.member, interaction.user),
         });
 
-        const replyMsg = await interaction.editReply({ content: chunks[0] });
+        // 表情包附件跟在最後一塊文字上；只有圖時 payloads 只有一個 { files }
+        const [first, ...rest] = buildPayloads(chunks, files);
+        const replyMsg = await interaction.editReply(first);
         recordBotMessageContext(replyMsg.id, mode, userId, userName, logExtra);
 
-        for (let i = 1; i < chunks.length; i++) {
-            const followUpMsg = await interaction.followUp({ content: chunks[i], fetchReply: true });
+        for (const payload of rest) {
+            const followUpMsg = await interaction.followUp({ ...payload, fetchReply: true });
             recordBotMessageContext(followUpMsg.id, mode, userId, userName, logExtra);
         }
     } catch (error) {
@@ -273,10 +276,10 @@ async function handleChanceSet(interaction) {
 // ════════════════════════════════════════════════════════
 //  訊息處理：@ 提及、隨機插話
 // ════════════════════════════════════════════════════════
-async function sendChunks(message, chunks, scope) {
+async function sendChunks(message, { chunks, files }, scope) {
     const logExtra = { kind: scope.kind, scopeKey: scope.scopeKey };
-    for (const chunk of chunks) {
-        const sentMsg = await message.channel.send(chunk);
+    for (const payload of buildPayloads(chunks, files)) {
+        const sentMsg = await message.channel.send(payload);
         recordBotMessageContext(sentMsg.id, scope.persona, message.author.id, message.author.username, logExtra);
     }
 }
@@ -319,7 +322,7 @@ async function handleMention(message, client, { rawQuestion, hasAttachment, hasL
                 });
             });
         }
-        await sendChunks(message, result.chunks, scope);
+        await sendChunks(message, result, scope);
     } catch (error) {
         if (isQuotaError(error)) await replyQuotaNotice(message, error);
         else if (isEmptyResponseError(error)) await replyEmptyNotice(message);
@@ -363,7 +366,7 @@ async function handleRandomReply(message, client, { hasAttachment, hasReference,
                 channel: message.channel, messageId: message.id, botId, message, scope,
             });
         });
-        if (shortReply) await sendChunks(message, shortReply.chunks, scope);
+        if (shortReply) await sendChunks(message, shortReply, scope);
     } catch (error) {
         logger.error('AI', `隨機回覆錯誤：${error.message}`);
     }

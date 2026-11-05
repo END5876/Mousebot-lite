@@ -14,6 +14,7 @@ const { consumeQuota, isQuotaError } = require('./aiQuota');
 const logger = require('../../utils/logger');
 const promptStore = require('./promptStore');
 const persona = require('./persona');
+const memeStore = require('./memeStore');
 const { recordUsage } = require('./tokenTracker');
 const { escapeLabelBrackets } = require('./chatSanitize');
 const { getChannelClearTime, getUserInChannelClearTime } = require('./aiMemoryState');
@@ -103,7 +104,7 @@ function toGeminiPart(part) {
 // ════════════════════════════════════════════════════════
 /**
  * 組 system instruction。順序固定（讓隱式快取的前綴盡量不變）：
- * persona → _general → _group（群聊規則）→ 名冊；之後 sendWithHistory 再接搜尋資料。
+ * persona → _general → _group（群聊規則）→ 表情包清單 → 名冊；之後 sendWithHistory 再接搜尋資料。
  * 人格檔與 _group.md 缺檔時用 persona.js 的內建版本，_general.md 缺檔時直接略過。
  * @param {{ roster?: string }} [opts]
  */
@@ -112,6 +113,7 @@ function buildSystemInstruction({ roster = '' } = {}) {
         persona.getPersonaPrompt(),
         promptStore.getShared('_general'),
         persona.getGroupRules(),
+        memeStore.getMemePrompt(),
         roster,
     ].filter(Boolean).join('\n\n');
 }
@@ -237,8 +239,10 @@ function speakerLabel(userName) {
 async function renderHistoryMessages(msgs, botId, { labelFn, imageMsgCount = Infinity, textMax = Infinity, beforeFn = null }) {
     // 各則訊息的附件並行下載＋壓縮，再依原本的時間順序組裝；只下載最後 imageMsgCount 則
     const firstImageIndex = Math.max(0, msgs.length - imageMsgCount);
+    // Bot 自己發過的表情包還原成 [表情:標籤] 文字，不重新下載圖片（省 token，也讓模型看得懂自己用過什麼）
+    const split = msgs.map(msg => splitMemeAttachments(msg, botId));
     const attachmentPartsList = await Promise.all(
-        msgs.map((msg, i) => (i >= firstImageIndex ? processAttachments(msg.attachments) : []))
+        msgs.map((msg, i) => (i >= firstImageIndex ? processAttachments(split[i].attachments) : []))
     );
 
     const history = [];
@@ -254,7 +258,8 @@ async function renderHistoryMessages(msgs, botId, { labelFn, imageMsgCount = Inf
         const isBot = msg.author.id === botId;
 
         if (isBot) {
-            const botText = textContent ? stripSourcesLine(textContent) : '';
+            const botText = [textContent ? stripSourcesLine(textContent) : '', ...split[index].memeTags]
+                .filter(Boolean).join('\n');
             if (botText) parts.push({ text: botText });
         } else {
             // 每則都標上是誰說的，沒下載的附件換成文字標記
@@ -270,6 +275,20 @@ async function renderHistoryMessages(msgs, botId, { labelFn, imageMsgCount = Inf
         history.push({ role: isBot ? 'model' : 'user', parts });
     }
     return history;
+}
+
+/** 把 Bot 自己訊息裡的表情包附件挑出來換成 [表情:標籤]；其他訊息原樣回傳 */
+function splitMemeAttachments(msg, botId) {
+    const attachments = msg.attachments;
+    if (msg.author?.id !== botId || !attachments?.size) return { attachments, memeTags: [] };
+    const rest = new Map();
+    const memeTags = [];
+    for (const [id, att] of attachments) {
+        const tag = memeStore.memeTagOfAttachment(att);
+        if (tag === undefined) rest.set(id, att);
+        else memeTags.push(tag ? `[表情:${tag}]` : '[表情包]');
+    }
+    return { attachments: rest, memeTags };
 }
 
 // msg 是否在 ref 之後發出（同一毫秒時以 snowflake 大小判斷）
@@ -530,7 +549,7 @@ function buildPlainParts(text, imageParts, userName) {
  * @param {object|null} [opts.message]     @ 提及的原始訊息（處理引用）；/ai ask 時為 null
  * @param {object} opts.scope              persona.scopeFor() 的結果（呼叫端解析一次，與訊息紀錄一致）
  * @param {string} [opts.userName]         沒有 message 時的發言者名稱
- * @returns {Promise<{ text: string, chunks: string[] }>}
+ * @returns {Promise<{ text: string, chunks: string[], files: { attachment: string, name: string }[] }>}
  */
 async function getGeminiResponse({ userId, prompt = '', imageParts = [], channel, messageId = null, botId, message = null, scope, userName = null }) {
     const mode = persona.getPersonaKey();
@@ -556,7 +575,11 @@ async function getGeminiResponse({ userId, prompt = '', imageParts = [], channel
             const finishReason = response.candidates?.[0]?.finishReason ?? response.promptFeedback?.blockReason ?? 'unknown';
             throw new AiEmptyResponseError(finishReason);
         }
-        return { text, chunks: splitMessage(text) };
+        const { text: replyText, memes } = memeStore.extractMemes(text);
+        const files = await memeStore.toFiles(memes);
+        // 只有表情包標記，但找不到或下載失敗：抽掉後什麼都不剩，當成空回覆
+        if (!replyText && files.length === 0) throw new AiEmptyResponseError('MEME_ONLY_UNAVAILABLE');
+        return { text: replyText, chunks: replyText ? splitMessage(replyText) : [], files };
     } catch (error) {
         if (isEmptyResponseError(error)) logger.warn('AI', error.message);
         else if (!isQuotaError(error)) logger.error('AI', `Gemini Error (${MODEL_NAME}): ${error.message}`);
@@ -567,7 +590,7 @@ async function getGeminiResponse({ userId, prompt = '', imageParts = [], channel
 /**
  * 隨機插話：短回覆，失敗（含額度）時安靜放棄，回傳 null
  * @param {object} opts 同 getGeminiResponse
- * @returns {Promise<{ text: string, chunks: string[] }|null>}
+ * @returns {Promise<{ text: string, chunks: string[], files: { attachment: string, name: string }[] }|null>}
  */
 async function getShortResponse({ userId, prompt = '', imageParts = [], channel, messageId = null, botId, message = null, scope, userName = null }) {
     const mode = persona.getPersonaKey();
@@ -591,9 +614,10 @@ async function getShortResponse({ userId, prompt = '', imageParts = [], channel,
             guildId: channel?.guildId ?? message?.guildId ?? null,
         });
         recordUsage('short', response, { userId, mode });
-        const text = (response.text ?? '').trim();
-        if (!text) return null;
-        return { text, chunks: splitMessage(text) };
+        const { text, memes } = memeStore.extractMemes((response.text ?? '').trim());
+        const files = await memeStore.toFiles(memes);
+        if (!text && files.length === 0) return null;
+        return { text, chunks: text ? splitMessage(text) : [], files };
     } catch (error) {
         // 隨機插話被額度擋下時安靜放棄即可
         if (!isQuotaError(error)) logger.error('AI', `Short Response Error: ${error.message}`);
@@ -611,6 +635,7 @@ module.exports = {
     _internal: {
         fetchGroupChannelHistory,
         renderHistoryMessages,
+        splitMemeAttachments,
         buildMessagePartsWithReference,
         describeRefSource,
         compactHistory,

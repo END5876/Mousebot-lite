@@ -139,6 +139,37 @@ data/prompts/
 人格 prompt 要配合程式送給模型的格式：每則訊息開頭是 `【發言者：顯示名稱 (@帳號)】`，
 沒有其他身分標記，模型無法分辨誰是擁有者。
 
+### 表情包
+
+人格可以有自己的表情包，放在 `data/memes/<AI_PERSONA>/`（跟 prompts 一樣不隨程式碼部署）。
+
+**大肥魚表情包**（[dsh-nekowhale-stickers](https://github.com/Loping151/dsh-nekowhale-stickers)，286 張）：
+
+```sh
+node tools/importNekowhale.js              # 產生 data/memes/bigfish/memes.json（標註＋GIF 網址）
+node tools/importNekowhale.js --with-gpt   # 另外加上「大肥鱼和GPT娘」雙人套組
+node tools/importNekowhale.js --prefetch   # 順便把 GIF 全部先下載（約 358MB；預設用到才下載）
+# Docker：docker compose exec mousebot-lite node tools/importNekowhale.js
+```
+
+GIF 用到時才從 kiriyuki.com 下載，快取在 `data/memes/bigfish/.cache/`。
+表情包作者：B站 [可以叫我云大人/雾雪](https://space.bilibili.com/103739)，[kiriyuki.com](https://kiriyuki.com) 制作；
+標註資料 CC BY-NC 4.0，圖片版權歸原作者，**僅限非商業使用並保留作者連結**。
+
+**自己的圖**：直接把圖放進資料夾，檔名就是名字；`memes.json` 可寫 `{ "名字": "什麼時候用" }` 補說明。
+
+```
+data/memes/bigfish/
+├── 嘴饞.png          # png / jpg / jpeg / gif / webp，單檔 9.5MB 以內
+└── memes.json
+```
+
+AI 在回覆最後單獨一行寫 `[表情:關鍵詞]`，送出時換成圖片附件（一則最多一張，也可以只送圖）。
+關鍵詞依序比對名字 → 情緒 → 標籤 → 名字／標籤／用途包含，同分隨機、避開最近 20 張；找不到或下載失敗就只送文字。
+60 張以內 prompt 逐張列出；更多時只列情緒與常用關鍵詞（大肥魚約 400 字）。
+增刪檔案不用重啟（約 5 秒內生效）。讀歷史時 Bot 自己發過的表情包會還原成 `[表情:名字]`，不重新下載圖片。
+資料夾不存在或沒有圖時功能關閉。
+
 ## 管理面板
 
 網頁管理面板是獨立的服務 admin-panel，一個網頁同時管理正式版與精簡版。精簡版在面板上提供：
