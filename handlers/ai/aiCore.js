@@ -420,13 +420,17 @@ function compactHistory(history, { maxParts, maxChars }) {
     return firstUser === -1 ? [] : mergeConsecutiveRoles(out.slice(firstUser));
 }
 
+// 併進同一個 user content 時，用這段把「之前的群聊」和「這次要回的訊息」隔開，
+// 不然模型看到一串【發言者】分不出該回哪一則，會把好幾個話題一起回
+const CURRENT_TURN_DIVIDER = '【以上是你上次發言後群裡的其他聊天，只當背景，不用逐則回應】\n【下面這則才是你這次要回的】';
+
 /**
- * 接上本次訊息。歷史最後一則若是 user，就把本次的 parts 併進去，避免出現兩個連續的 user content。
+ * 接上本次訊息。歷史最後一則若是 user，就把本次的 parts 併進去（中間插入分隔），避免出現兩個連續的 user content。
  */
 function appendUserTurn(history, parts) {
     const last = history[history.length - 1];
     if (last?.role === 'user') {
-        return [...history.slice(0, -1), { role: 'user', parts: [...last.parts, ...parts] }];
+        return [...history.slice(0, -1), { role: 'user', parts: [...last.parts, { text: CURRENT_TURN_DIVIDER }, ...parts] }];
     }
     return [...history, { role: 'user', parts }];
 }

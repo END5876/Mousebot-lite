@@ -306,11 +306,14 @@ test('compactHistory：限制的是 part 數與字數（不是 content 數），
   assert.deepEqual(core.compactHistory([], core.RESEARCH_HISTORY_LIMIT), []);
 });
 
-test('appendUserTurn：把本次 parts 併進最後的 user content，不改到原陣列', () => {
+test('appendUserTurn：把本次 parts 併進最後的 user content（中間插分隔），不改到原陣列', () => {
   const history = [{ role: 'model', parts: [{ text: 'a' }] }, { role: 'user', parts: [{ text: 'b' }] }];
   const merged = core.appendUserTurn(history, [{ text: 'c' }]);
   assert.equal(merged.length, 2);
-  assert.deepEqual(merged[1].parts, [{ text: 'b' }, { text: 'c' }]);
+  assert.equal(merged[1].parts.length, 3);
+  assert.deepEqual(merged[1].parts[0], { text: 'b' });
+  assert.match(merged[1].parts[1].text, /這次要回的/);
+  assert.deepEqual(merged[1].parts[2], { text: 'c' });
   assert.deepEqual(history[1].parts, [{ text: 'b' }]);
   assert.equal(core.appendUserTurn([{ role: 'model', parts: [] }], [{ text: 'c' }]).length, 2);
   assert.equal(core.appendUserTurn([], [{ text: 'c' }]).length, 1);
