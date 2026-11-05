@@ -576,9 +576,9 @@ async function getShortResponse({ userId, prompt = '', imageParts = [], channel,
         const { history, speakers } = channel
             ? await fetchGroupChannelHistory(channel, messageId, botId, { scope, mode })
             : { history: [], speakers: [] };
-        const shortPrompt = imageParts.length > 0 && !prompt
-            ? `請用大約10~200個字回應這張圖片`
-            : `請用大約10~200字回應訊息：「${prompt}」`;
+        // 直接傳原文，像群裡有人說了話，不包成「請回應…」的指令；長度交給 prompt（_general / 人格）與 maxOutputTokens。
+        // 只傳圖時不能留空，否則會被標成「只 @ 了你」
+        const shortPrompt = prompt || (imageParts.length > 0 ? '（傳了一張圖片）' : '');
 
         const messageParts = message
             ? await buildMessagePartsWithReference(message, shortPrompt, imageParts, botId, userId)
