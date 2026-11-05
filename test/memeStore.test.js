@@ -115,6 +115,24 @@ test('圖庫網站連不上：改送同情緒、已快取的圖；之後一段�
   assert.ok(Date.now() - t0 < 1000);
 });
 
+test('輪流：同名的圖不會搶走整個情緒，同一批候選每張都輪得到', () => {
+  const many = ['害怕', '发抖', '躲起来', '救命', '吓到', '缩成一团'].map((name, i) => ({
+    id: `p/${i}`, name, emotion: '害怕', tags: [], url: `https://example.com/${i}.gif`,
+  }));
+  reset({ 'memes.json': kit(many) });
+  const seen = new Set();
+  for (let i = 0; i < many.length; i++) seen.add(memeStore.extractMemes('[表情:害怕]').memes[0].name);
+  assert.equal(seen.size, many.length);              // 6 次剛好 6 張都送過，不會一直是名字叫「害怕」的那張
+});
+
+test('候選太少時併入「包含」的', () => {
+  reset({ 'memes.json': kit(KIT) });
+  // 「摸鱼」完全相同的只有 1 張，併入「包含」的也沒有別張 → 仍找得到那 1 張
+  assert.equal(memeStore.resolveMeme('摸鱼').name, '摸鱼');
+  // 「别惹」沒有完全相同的，靠標籤「别惹我」包含找到
+  assert.equal(memeStore.resolveMeme('别惹').name, '我要咬他');
+});
+
 test('套組很多張時 prompt 只列情緒與常用關鍵詞', () => {
   const many = Array.from({ length: memeStore._internal.INDEX_MODE_MAX + 1 }, (_, i) => ({
     id: `p/${i}`, name: `图${i}`, emotion: i % 2 ? '开心' : '生气', tags: ['摸鱼'], url: `https://example.com/${i}.gif`,

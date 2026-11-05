@@ -9,8 +9,8 @@
 //      圖片用到時才從 url 下載，快取在 .cache/<hash>.<副檔名>。
 //      大肥魚表情包用 `node tools/importNekowhale.js` 產生（見 README）。
 //
-// 解析 [表情:關鍵詞]（兩邊先繁轉簡、英文轉小寫再比）：名字完全相同 → 情緒 → 標籤 → 名字／標籤／用途包含關鍵詞，同分的隨機挑，
-// 最近送過的盡量避開。張數少（≤ INDEX_MODE_MAX）時 prompt 列出每一張；多的時候只列情緒與常用關鍵詞。
+// 解析 [表情:關鍵詞]（兩邊先繁轉簡、英文轉小寫再比）：名字／情緒／標籤完全相同的一起當候選，太少（< MIN_POOL）再併入
+// 名字／標籤／用途包含關鍵詞的；候選裡避開最近送過的、優先挑送過次數最少的。張數少（≤ INDEX_MODE_MAX）時 prompt 列出每一張；多的時候只列情緒與常用關鍵詞。
 // 資料夾不存在或沒有圖時整個功能關閉。增刪檔案不用重啟（每 RELOAD_CHECK_MS 重新掃描）。
 //
 // 送出的附件檔名用 meme-<雜湊>.<副檔名>（Discord 會改掉非 ASCII 檔名），
@@ -31,6 +31,7 @@ const MAX_FILE_BYTES   = 9.5 * 1024 * 1024;         // Discord 一般伺服器�
 const INDEX_MODE_MAX   = 60;                        // 張數不超過這個數就在 prompt 列出每一張
 const HINT_TAG_COUNT   = 40;                        // 張數多時 prompt 列出的常用關鍵詞數
 const RECENT_AVOID     = 20;                        // 隨機挑選時避開最近送過的幾張
+const MIN_POOL         = 5;                         // 完全相同的候選少於這個數時，併入「包含」的候選
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 const DOWNLOAD_BACKOFF_MS = 10 * 60 * 1000;         // 下載失敗後這段時間不再連圖庫網站，直接用已快取的圖（網站掛了也不拖慢回覆）
 const TAG_RE           = /[[［]\s*表情\s*[:：]\s*([^\]］\n]+?)\s*[\]］]/g;
@@ -50,10 +51,11 @@ const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
  * @property {string} cacheKey 快取檔名
  */
 
-const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), byName: new Map(), prompt: '' });
+const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), prompt: '' });
 let cache = emptyCache();
 const recent = [];
 const inflight = new Map();
+const useCount = new Map();                         // 每張送過幾次（只在記憶體，給 pickRandom 輪流用）
 let downloadBlockedUntil = 0;
 
 function memeDir() {
@@ -182,7 +184,6 @@ function load() {
             meme: m, name: normalize(m.name), emotion: normalize(m.emotion),
             tags: m.tags.map(normalize), use: normalize(m.use),
         })),
-        byName: new Map(list.map(m => [normalize(m.name), m])),
         prompt: buildPrompt(list),
     };
     if (list.length !== prevSize && list.length > 0) logger.info('Meme', `已載入 ${list.length} 張表情包（${dir}）`);
@@ -198,34 +199,43 @@ function getMemePrompt() {
     return load().prompt;
 }
 
+/**
+ * 從候選裡挑一張，讓每張輪得到：先避開最近送過的，再挑送過次數最少的，同次數隨機。
+ * 次數只記在記憶體（重啟歸零），用來在同一批候選裡輪流，不是統計。
+ */
 function pickRandom(candidates) {
     if (candidates.length === 0) return null;
     const fresh = candidates.filter(m => !recent.includes(m.id));
     const pool = fresh.length ? fresh : candidates;
-    return pool[Math.floor(Math.random() * pool.length)];
+    const minUse = Math.min(...pool.map(m => useCount.get(m.id) ?? 0));
+    const least = pool.filter(m => (useCount.get(m.id) ?? 0) === minUse);
+    return least[Math.floor(Math.random() * least.length)];
 }
 
-/** 關鍵詞 → 一張表情包；找不到回傳 null */
+/**
+ * 關鍵詞 → 一張表情包；找不到回傳 null。
+ * 完全相同（名字、情緒、標籤任一）的全部放進同一個候選池一起挑——不讓同名的那一張搶走整個情緒，
+ * 例如「害怕」不會每次都送名字叫「害怕」的那張；完全相同的不到 MIN_POOL 張時，再併入「包含」的，避免一直重複同幾張。
+ */
 function resolveMeme(keyword) {
     const q = normalize(keyword);
     if (!q) return null;
-    const { index, byName } = load();
-    if (byName.has(q)) return byName.get(q);
-    const tiers = [
-        e => e.emotion === q,
-        e => e.tags.includes(q),
-        e => e.name.includes(q) || e.tags.some(t => t.includes(q) || (t.length >= 2 && q.includes(t))) || e.use.includes(q),
-    ];
-    for (const match of tiers) {
-        const hit = pickRandom(index.filter(match).map(e => e.meme));
-        if (hit) return hit;
+    const { index } = load();
+    const exact = index.filter(e => e.name === q || e.emotion === q || e.tags.includes(q));
+    let pool = exact;
+    if (exact.length < MIN_POOL) {
+        const fuzzy = index.filter(e => !exact.includes(e) && (
+            e.name.includes(q) || e.tags.some(t => t.includes(q) || (t.length >= 2 && q.includes(t))) || e.use.includes(q)
+        ));
+        pool = [...exact, ...fuzzy];
     }
-    return null;
+    return pickRandom(pool.map(e => e.meme));
 }
 
 function remember(meme) {
     recent.push(meme.id);
     while (recent.length > RECENT_AVOID) recent.shift();
+    useCount.set(meme.id, (useCount.get(meme.id) ?? 0) + 1);
 }
 
 /**
@@ -353,7 +363,7 @@ module.exports = {
     _internal: {
         hashId,
         normalize,
-        resetCache: () => { cache = emptyCache(); recent.length = 0; downloadBlockedUntil = 0; },
+        resetCache: () => { cache = emptyCache(); recent.length = 0; useCount.clear(); downloadBlockedUntil = 0; },
         INDEX_MODE_MAX,
     },
 };
