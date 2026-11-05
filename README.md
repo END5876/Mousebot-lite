@@ -21,7 +21,9 @@ Mousebot 的精簡版，只保留這些功能：
 │   ├── audioManager.js               # 音訊層管理（靜音防踢 / 音樂）
 │   ├── presenceHandler.js            # Bot 狀態文字（data/presence.json，管理面板可改）
 │   ├── musicplayer/                  # 音樂播放（線上 / 本地 / 佇列 / 快取 / 響度正規化 / 重啟後接續播放）
-│   └── ai/                           # AI 聊天（單一人格）：aiHandler 指令與訊息、aiCore 群組歷史與呼叫、persona 固定人格
+│   └── ai/                           # AI 聊天（單一人格）：aiHandler 指令與訊息、aiCore 群組歷史與呼叫、persona 固定人格、
+│                                     #   memeStore 表情包、t2sTable 繁轉簡對照表（表情包關鍵詞比對用）
+├── tools/importNekowhale.js          # 匯入大肥魚表情包（見「表情包」）
 ├── utils/
 │   ├── processGuards.js              # 全域錯誤處理、SIGTERM 正常關機（onShutdown 關閉前動作）
 │   ├── config.js                     # 擁有者權限（OWNER_USER_ID）
@@ -199,6 +201,7 @@ AI 在回覆最後單獨一行寫 `[表情:關鍵詞]`，送出時換成圖片�
 | `handlers/ai/aiUtils.js` | 拿掉 TTS（`isAITTSEnabled`、`setAITTSEnabled`、`speakWithTTS`） |
 | `handlers/ai/persona.js` | 精簡版專用（取代正式版的 `aiScope.js`、`modeSelector.js`） |
 
+`handlers/ai/memeStore.js`、`t2sTable.js` 是精簡版獨有（正式版沒有），同步時不用比對。
 `handlers/ai/` 其餘檔案（`aiSettings`、`geminiClient`、`aiQuota`、`aiChance`、`aiMemoryState`、`aiMessageLog`、
 `chatSanitize`、`promptStore`、`searchGrounding`、`tokenTracker`）與 `utils/dataDir.js`、`utils/alert.js` 和正式版相同。
 
