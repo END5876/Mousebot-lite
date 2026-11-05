@@ -173,6 +173,88 @@ test('buildPayloads：附件跟在最後一塊，沒文字就單獨送圖', () =
   assert.deepEqual(memeStore.buildPayloads(['一']), [{ content: '一' }]);
 });
 
+test('buildPayloads：網址另外單獨送一則，放在文字之後', () => {
+  const link = { url: 'https://meme.example.com/bigfish/small-160/aaaaaaaaaaaa.gif' };
+  assert.deepEqual(memeStore.buildPayloads(['一', '二'], [link]), [{ content: '一' }, { content: '二' }, { content: link.url }]);
+  assert.deepEqual(memeStore.buildPayloads([], [link]), [{ content: link.url }]);
+});
+
+/** 在 MEME_PUBLIC_URL 設定下跑 fn，結束後還原 */
+async function withPublicUrl(value, fn) {
+  const saved = process.env.MEME_PUBLIC_URL;
+  if (value === undefined) delete process.env.MEME_PUBLIC_URL; else process.env.MEME_PUBLIC_URL = value;
+  try { return await fn(); } finally {
+    if (saved === undefined) delete process.env.MEME_PUBLIC_URL; else process.env.MEME_PUBLIC_URL = saved;
+  }
+}
+
+test('網址模式：大圖縮小、小圖原樣複製，都放進 small-<px>/ 並送網址；沒設或不是 https 就送附件', async () => {
+  const sharp = require('sharp');
+  const big = await sharp({ create: { width: 300, height: 300, channels: 4, background: '#f00' } }).png().toBuffer();
+  const small = await sharp({ create: { width: 100, height: 50, channels: 4, background: '#0f0' } }).png().toBuffer();
+  reset({ '大圖.png': big, '小圖.png': small });
+  const smallDir = path.join(DIR, '.cache', 'small-160');
+
+  await withPublicUrl('https://meme.example.com/', async () => {
+    const [b] = await memeStore.toFiles([memeStore.resolveMeme('大圖')]);
+    const [s] = await memeStore.toFiles([memeStore.resolveMeme('小圖')]);
+    const hb = memeStore._internal.hashId('大圖');
+    const hs = memeStore._internal.hashId('小圖');
+    assert.deepEqual(b, { url: `https://meme.example.com/bigfish/small-160/${hb}.png` });
+    assert.deepEqual(s, { url: `https://meme.example.com/bigfish/small-160/${hs}.png` });
+    // aiUtils 擋掉了 sharp 從檔案路徑讀圖，這裡也要先讀成 Buffer
+    const mb = await sharp(fs.readFileSync(path.join(smallDir, `${hb}.png`))).metadata();
+    assert.deepEqual([mb.width, mb.height], [160, 160]);
+    assert.ok(fs.readFileSync(path.join(smallDir, `${hs}.png`)).equals(small));
+  });
+
+  await withPublicUrl(undefined, async () => {
+    const [f] = await memeStore.toFiles([memeStore.resolveMeme('大圖')]);
+    assert.equal(f.attachment, path.join(smallDir, `${memeStore._internal.hashId('大圖')}.png`));
+  });
+  await withPublicUrl('http://meme.example.com', async () => {
+    assert.equal(memeStore.publicBase(), '');
+    const [f] = await memeStore.toFiles([memeStore.resolveMeme('大圖')]);
+    assert.ok(f.attachment);
+  });
+});
+
+test('網址模式：Bot 自己發的表情包網址還原成名字，引用時不抓網址預覽', async () => {
+  reset({ 'memes.json': kit(KIT) });
+  await withPublicUrl('https://meme.example.com', async () => {
+    const url = 'https://meme.example.com/bigfish/small-160/aaaaaaaaaaaa.gif';
+    assert.equal(memeStore.memeTagOfContent(url), '摸鱼');
+    assert.equal(memeStore.memeTagOfContent('https://meme.example.com/bigfish/small-160/ffffffffffff.gif'), null);
+    assert.equal(memeStore.memeTagOfContent(`看這個 ${url}`), undefined);
+    assert.equal(memeStore.memeTagOfContent('https://other.example.com/bigfish/small-160/aaaaaaaaaaaa.gif'), undefined);
+
+    const bot = _internal.splitMemeAttachments({ author: { id: 'BOT' }, content: url, attachments: new Map() }, 'BOT');
+    assert.deepEqual(bot.memeTags, ['[表情:摸鱼]']);
+    assert.equal(bot.contentIsMeme, true);
+    const human = _internal.splitMemeAttachments({ author: { id: 'U' }, content: url, attachments: new Map() }, 'BOT');
+    assert.equal(human.contentIsMeme, false);
+
+    let touched = false;
+    const refMsg = {
+      id: 'REF', author: { id: 'BOT', bot: true, username: 'bot' }, member: null, content: url,
+      attachments: new Map(),
+      get embeds() { touched = true; return [{ data: { type: 'image', url } }]; },
+      mentions: { users: new Map(), roles: new Map(), channels: new Map(), repliedUser: null },
+    };
+    const message = {
+      id: 'CUR', author: { id: 'U', bot: false, username: 'u' }, member: null, content: '笑死',
+      reference: { messageId: 'REF' }, embeds: [], attachments: new Map(),
+      mentions: { users: new Map(), roles: new Map(), channels: new Map(), repliedUser: null },
+      channel: { messages: { fetch: async () => refMsg } },
+    };
+    const parts = await _internal.buildMessagePartsWithReference(message, '笑死', [], 'BOT', 'U');
+    assert.ok(parts.every(p => !p.inlineData));
+    assert.match(parts[0].text, /\[表情:摸鱼\]/);
+    assert.ok(!parts[0].text.includes('meme.example.com'));
+    assert.equal(touched, false);
+  });
+});
+
 test('歷史：Bot 的表情包附件還原成名字，其他附件照舊', () => {
   reset({ 'memes.json': kit(KIT) });
   const hash = memeStore._internal.hashId('p/1N01_摸鱼');

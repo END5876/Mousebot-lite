@@ -15,6 +15,9 @@
 //
 // 送出的附件檔名用 meme-<雜湊>.<副檔名>（Discord 會改掉非 ASCII 檔名），
 // 讀歷史時再用雜湊查回名字，把 Bot 自己發過的表情包還原成 [表情:名字] 文字，不重新下載圖片。
+// 送出前縮到長邊 MEME_DISPLAY_SIZE px（預設 160，0 = 原圖），縮小版快取在 .cache/small-<px>/。
+// 有設 MEME_PUBLIC_URL 時改送「只有圖片網址」的訊息（手機版不會把圖拉滿寬度，見 publicBase），
+// 讀歷史時同樣把 Bot 自己發的表情包網址還原成 [表情:名字]。
 
 const fs     = require('fs');
 const path   = require('path');
@@ -34,6 +37,26 @@ const RECENT_AVOID     = 20;                        // 隨機挑選時避開最�
 const MIN_POOL         = 5;                         // 完全相同的候選少於這個數時，併入「包含」的候選
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 const DOWNLOAD_BACKOFF_MS = 10 * 60 * 1000;         // 下載失敗後這段時間不再連圖庫網站，直接用已快取的圖（網站掛了也不拖慢回覆）
+// 送出前把圖縮到長邊不超過這麼多 px（Discord 照原尺寸顯示，300px 的 GIF 很佔聊天室版面）；0 = 不縮
+const DISPLAY_SIZE     = (() => {
+    const n = Number.parseInt(process.env.MEME_DISPLAY_SIZE ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 160;
+})();
+// 縮小版放在 .cache/<這個資料夾>/；MEME_PUBLIC_URL 對外提供的也是這個資料夾
+const SMALL_DIR        = `small-${DISPLAY_SIZE || 'orig'}`;
+
+/**
+ * 表情包的公開網址前綴（MEME_PUBLIC_URL，例如 https://meme.example.com）；沒設回傳 ''。
+ * 有設時表情包改成「訊息內容只有圖片網址」送出：Discord 產生圖片預覽，手機版照原尺寸顯示；
+ * 上傳成附件的話，手機版會把單張圖拉滿訊息寬度。
+ * 網址是 <前綴>/<人格>/<SMALL_DIR>/<檔名>，由反向代理對應到 data/memes/<人格>/.cache/<SMALL_DIR>/<檔名>。
+ */
+function publicBase() {
+    const v = (process.env.MEME_PUBLIC_URL ?? '').trim().replace(/\/+$/, '');
+    return /^https:\/\/[^/\s]+(\/[^\s]*)?$/i.test(v) ? v : '';
+}
+
+const fileKey = meme => meme.cacheKey || meme.hash;
 const TAG_RE           = /[[［]\s*表情\s*[:：]\s*([^\]］\n]+?)\s*[\]］]/g;
 const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
 
@@ -51,7 +74,7 @@ const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
  * @property {string} cacheKey 快取檔名
  */
 
-const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), prompt: '' });
+const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), byFileKey: new Map(), prompt: '' });
 let cache = emptyCache();
 const recent = [];
 const inflight = new Map();
@@ -179,6 +202,7 @@ function load() {
     cache = {
         dir, checkedAt: now, list,
         byHash: new Map(list.map(m => [m.hash, m])),
+        byFileKey: new Map(list.map(m => [fileKey(m).toLowerCase(), m])),
         // 比對用的正規化欄位（繁轉簡、小寫），掃描時算一次
         index: list.map(m => ({
             meme: m, name: normalize(m.name), emotion: normalize(m.emotion),
@@ -302,6 +326,52 @@ async function download(meme) {
     return job;
 }
 
+/**
+ * 送出用的版本（動畫保留），放在 .cache/<SMALL_DIR>/：長邊超過 DISPLAY_SIZE 就縮，沒超過就原樣複製
+ * （網址模式要求每張都在這個資料夾）。沒設 DISPLAY_SIZE 也沒設公開網址、或處理失敗時回傳原圖路徑。
+ * 直接放的圖如果被換掉（原圖比縮小版新）會重做。
+ */
+async function shrink(src, meme) {
+    if (!DISPLAY_SIZE && !publicBase()) return src;
+    const target = path.join(memeDir(), '.cache', SMALL_DIR, `${fileKey(meme)}${meme.ext}`);
+    try {
+        const [srcStat, outStat] = await Promise.all([
+            fs.promises.stat(src),
+            fs.promises.stat(target).catch(() => null),
+        ]);
+        if (outStat?.size > 0 && outStat.mtimeMs >= srcStat.mtimeMs) return target;
+    } catch { return src; }
+    if (inflight.has(target)) return inflight.get(target);
+
+    const job = (async () => {
+        const sharp = require('sharp');
+        const animated = meme.ext === '.gif' || meme.ext === '.webp';
+        // 一定要先讀成 Buffer：aiUtils 用 sharp.block 擋掉了所有從檔案路徑讀圖的 loader，只開放 Buffer 版
+        const input = await fs.promises.readFile(src);
+        const meta = await sharp(input, { animated }).metadata();
+        const srcW = meta.width ?? 0;
+        const srcH = meta.pageHeight ?? meta.height ?? 0;
+        const scale = DISPLAY_SIZE ? Math.min(1, DISPLAY_SIZE / Math.max(srcW, srcH)) : 1;
+        await fs.promises.mkdir(path.dirname(target), { recursive: true });
+        const tmp = `${target}.${process.pid}.tmp`;
+        if (scale < 1) {
+            const fmt = { '.gif': 'gif', '.webp': 'webp', '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg' }[meme.ext];
+            await sharp(input, { animated })
+                .resize({ width: Math.round(srcW * scale), height: Math.round(srcH * scale), fit: 'fill' })
+                .toFormat(fmt).toFile(tmp);
+        } else {
+            await fs.promises.writeFile(tmp, input);
+        }
+        await fs.promises.rename(tmp, target);
+        return target;
+    })().catch((err) => {
+        logger.warn('Meme', `表情包「${meme.name}」縮圖失敗，改送原圖：${err.message}`);
+        return src;
+    }).finally(() => inflight.delete(target));
+    inflight.set(target, job);
+    return job;
+}
+
 /** 下載失敗時的替代：同情緒、本機已經有的圖（隨機、避開最近送過的）；都沒有回傳 null */
 function cachedSubstitute(meme) {
     const { list } = load();
@@ -309,22 +379,31 @@ function cachedSubstitute(meme) {
     return pickRandom(sameEmotion);
 }
 
+/** 準備好的圖 → 要送出的形式：有公開網址、且圖在 SMALL_DIR 裡就送網址，否則送附件 */
+function toSendable(file, meme) {
+    const base = publicBase();
+    if (base && path.basename(path.dirname(file)) === SMALL_DIR) {
+        return { url: `${base}/${encodeURIComponent(persona.getPersonaKey())}/${SMALL_DIR}/${path.basename(file)}` };
+    }
+    return { attachment: file, name: `meme-${meme.hash}${meme.ext}` };
+}
+
 /**
- * 表情包 → Discord 附件；遠端的先下載（失敗就略過那張，不影響文字回覆）
+ * 表情包 → 要送出的圖（網址或附件，見 toSendable）；遠端的先下載（失敗就改送已快取的同情緒圖，都沒有就略過，不影響文字回覆）
  * @param {Meme[]} memes
- * @returns {Promise<{ attachment: string, name: string }[]>}
+ * @returns {Promise<({ url: string } | { attachment: string, name: string })[]>}
  */
 async function toFiles(memes) {
     const files = await Promise.all(memes.map(async (meme) => {
         try {
             const file = meme.file ?? await download(meme);
-            return { attachment: file, name: `meme-${meme.hash}${meme.ext}` };
+            return toSendable(await shrink(file, meme), meme);
         } catch (err) {
             const sub = cachedSubstitute(meme);
             logger.warn('Meme', `表情包「${meme.name}」下載失敗：${err.message}${sub ? `，改送已快取的「${sub.name}」` : ''}`);
             if (!sub) return null;
             remember(sub);
-            return { attachment: localFile(sub), name: `meme-${sub.hash}${sub.ext}` };
+            return toSendable(await shrink(localFile(sub), sub), sub);
         }
     }));
     return files.filter(Boolean);
@@ -338,16 +417,33 @@ function memeTagOfAttachment(attachment) {
 }
 
 /**
- * 把回覆切塊與表情包附件組成要依序送出的 payload：附件跟在最後一塊文字上，沒有文字就單獨送圖。
+ * Bot 自己發的訊息內容是不是一則表情包網址（網址模式送出的）：不是回傳 undefined；
+ * 是的話回傳名字（對不到時回傳 null）。只看目前的 MEME_PUBLIC_URL，換過網域後舊訊息會被當成一般網址。
+ */
+function memeTagOfContent(content) {
+    const base = publicBase();
+    if (!base || typeof content !== 'string') return undefined;
+    const text = content.trim();
+    if (!text.startsWith(`${base}/`)) return undefined;
+    const m = /^[^/]+\/[^/]+\/([0-9a-z]+)\.[a-z0-9]+$/i.exec(text.slice(base.length + 1));
+    if (!m) return undefined;
+    return load().byFileKey.get(m[1].toLowerCase())?.name ?? null;
+}
+
+/**
+ * 把回覆切塊與表情包組成要依序送出的 payload：
+ * 附件跟在最後一塊文字上，沒有文字就單獨送圖；網址另外單獨送一則（內容只有網址，Discord 才會只顯示圖、不顯示網址文字）。
  * @param {string[]} chunks
- * @param {{ attachment: string, name: string }[]} [files]
+ * @param {({ url: string } | { attachment: string, name: string })[]} [files]
  */
 function buildPayloads(chunks, files = []) {
     const payloads = chunks.filter(c => c && c.trim()).map(content => ({ content }));
-    if (files.length > 0) {
-        if (payloads.length > 0) payloads[payloads.length - 1].files = files;
-        else payloads.push({ files });
+    const attachments = files.filter(f => !f.url);
+    if (attachments.length > 0) {
+        if (payloads.length > 0) payloads[payloads.length - 1].files = attachments;
+        else payloads.push({ files: attachments });
     }
+    for (const f of files) if (f.url) payloads.push({ content: f.url });
     return payloads;
 }
 
@@ -358,7 +454,9 @@ module.exports = {
     extractMemes,
     toFiles,
     memeTagOfAttachment,
+    memeTagOfContent,
     buildPayloads,
+    publicBase,
     MAX_PER_REPLY,
     _internal: {
         hashId,

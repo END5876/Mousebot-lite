@@ -36,7 +36,7 @@ const {
 } = require('./aiChance');
 
 const persona = require('./persona');
-const { buildPayloads, listMemes } = require('./memeStore');
+const { buildPayloads, listMemes, memeTagOfContent, publicBase } = require('./memeStore');
 const bootSummary = require('../../utils/bootSummary');
 const { isOwner } = require('../../utils/config');
 const { isQuotaError, quotaMessage, describeLimits } = require('./aiQuota');
@@ -282,15 +282,15 @@ async function handleChanceSet(interaction) {
 // ════════════════════════════════════════════════════════
 /**
  * 送出一則；帶表情包附件失敗（沒有「附加檔案」權限、檔案太大…）時改送純文字，不讓圖片拖垮整則回覆。
- * 只有圖、沒有文字的那則失敗就放棄（回傳 null）。
+ * 只有圖（附件或表情包網址）、沒有文字的那則失敗就放棄（回傳 null）。
  */
 async function sendWithMemeFallback(send, payload) {
     try {
         return await send(payload);
     } catch (err) {
-        if (!payload.files) throw err;
+        if (!payload.files && memeTagOfContent(payload.content) === undefined) throw err;
         logger.warn('Meme', `表情包送出失敗（${err.code ?? ''} ${err.message}），改送純文字`);
-        if (!payload.content) return null;
+        if (!payload.files || !payload.content) return null;
         return send({ content: payload.content });
     }
 }
@@ -416,7 +416,9 @@ function setupAICommands(client) {
     bootSummary.report(
         'AI 表情包',
         memeCount ? 'ok' : 'off',
-        memeCount ? `${memeCount} 張` : `沒有圖庫（data/memes/${persona.getPersonaKey()}/），要用請跑 node tools/importNekowhale.js`
+        memeCount
+            ? `${memeCount} 張，${publicBase() ? `送網址（${publicBase()}）` : '送附件（手機版會拉滿寬度；設 MEME_PUBLIC_URL=https://… 改送網址）'}`
+            : `沒有圖庫（data/memes/${persona.getPersonaKey()}/），要用請跑 node tools/importNekowhale.js`
     );
 
     client.on('messageCreate', async message => {

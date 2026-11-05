@@ -254,7 +254,9 @@ async function renderHistoryMessages(msgs, botId, { labelFn, imageMsgCount = Inf
         attachmentPartsList[index].forEach(img => parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } }));
 
         // 不用 cleanContent：它會把 @提及 換成伺服器暱稱，跟發言者標籤的 username 對不上
-        const textContent = truncateChars(maskMediaUrls(replaceMentions(msg, botId), getMediaEmbeds(msg))?.trim() ?? '', textMax);
+        const textContent = split[index].contentIsMeme
+            ? ''
+            : truncateChars(maskMediaUrls(replaceMentions(msg, botId), getMediaEmbeds(msg))?.trim() ?? '', textMax);
         const isBot = msg.author.id === botId;
 
         if (isBot) {
@@ -277,18 +279,27 @@ async function renderHistoryMessages(msgs, botId, { labelFn, imageMsgCount = Inf
     return history;
 }
 
-/** 把 Bot 自己訊息裡的表情包附件挑出來換成 [表情:標籤]；其他訊息原樣回傳 */
+/**
+ * 把 Bot 自己訊息裡的表情包挑出來換成 [表情:標籤]；其他訊息原樣回傳。
+ * 表情包有兩種送法：附件（meme-<雜湊> 檔名），或內容只有表情包網址（MEME_PUBLIC_URL）——後者 contentIsMeme 為 true，
+ * 呼叫端要把那則的文字和網址預覽當成沒有，不要把網址或預覽圖再給模型看。
+ */
 function splitMemeAttachments(msg, botId) {
     const attachments = msg.attachments;
-    if (msg.author?.id !== botId || !attachments?.size) return { attachments, memeTags: [] };
-    const rest = new Map();
+    if (msg.author?.id !== botId) return { attachments, memeTags: [], contentIsMeme: false };
     const memeTags = [];
+    const toTag = tag => (tag ? `[表情:${tag}]` : '[表情包]');
+    const contentTag = memeStore.memeTagOfContent(msg.content);
+    const contentIsMeme = contentTag !== undefined;
+    if (contentIsMeme) memeTags.push(toTag(contentTag));
+    if (!attachments?.size) return { attachments, memeTags, contentIsMeme };
+    const rest = new Map();
     for (const [id, att] of attachments) {
         const tag = memeStore.memeTagOfAttachment(att);
         if (tag === undefined) rest.set(id, att);
-        else memeTags.push(tag ? `[表情:${tag}]` : '[表情包]');
+        else memeTags.push(toTag(tag));
     }
-    return { attachments: rest, memeTags };
+    return { attachments: rest, memeTags, contentIsMeme };
 }
 
 // msg 是否在 ref 之後發出（同一毫秒時以 snowflake 大小判斷）
@@ -475,14 +486,16 @@ async function buildMessagePartsWithReference(message, question, imageParts, bot
     const authorName = labelForMessage(message);
 
     if (refMsg) {
-        const refMedia   = await processMediaEmbeds(
-            replaceMentions(refMsg, botId), getMediaEmbeds(refMsg)
-        );
+        // 引用的是 Bot 自己的表情包時換成 [表情:名字]，不重新下載圖片給模型看（省 token）；
+        // 網址送出的表情包，文字和網址預覽都略過
+        const { attachments: refAttachments, memeTags: refMemeTags, contentIsMeme } = splitMemeAttachments(refMsg, botId);
+        const refMedia   = contentIsMeme
+            ? { text: '', parts: [] }
+            : await processMediaEmbeds(replaceMentions(refMsg, botId), getMediaEmbeds(refMsg));
         const refContent = refMedia.text ? escapeLabelBrackets(refMedia.text) : refMedia.text;
         const refNotes   = [];
 
-        // 處理實體附件；引用的是 Bot 自己的表情包時換成 [表情:名字]，不重新下載圖片給模型看（省 token）
-        const { attachments: refAttachments, memeTags: refMemeTags } = splitMemeAttachments(refMsg, botId);
+        // 處理實體附件
         refNotes.push(...refMemeTags);
         if (refAttachments?.size > 0) {
             const refImageParts = await processAttachments(refAttachments);
