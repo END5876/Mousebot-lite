@@ -7,14 +7,16 @@ Mousebot 的精簡版，只保留這些功能：
 - **AI 聊天（選用）**：正式版的「單一人格」群聊模式（`/ai`、@ 提及、隨機插話）。沒有設定 `GEMINI_API_KEY` 時完全不啟用
 - **管理 API（選用）**：給網頁管理面板 admin-panel 呼叫，和正式版在同一個面板上管理（見「管理面板」）。沒有設定 `ADMIN_AGENT_TOKEN` 時不啟動
 
-`handlers/` 與 `utils/` 的程式碼源自正式版 [Mousebot](https://github.com/END5876/Mousebot)，
-大部分檔案相同；少數檔案因為精簡版功能較少而刻意不同（見「從正式版同步」）。
-`index.js`、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
+`handlers/`、`utils/`、`admin/` 與 `test/` 的共用檔和正式版 [Mousebot](https://github.com/END5876/Mousebot) 逐位元組相同，
+用 `npm run sync` 從正式版同步（見「從正式版同步」）；精簡版沒有的模組（語音辨識、TTS、通知、分帳…）檔案不存在，
+`utils/features.js` 的模組登錄表會自動略過。
+`index.js`、`profile.js`（精簡版的預設值）、`package.json`、`Dockerfile`、`docker-entrypoint.sh` 是精簡版自己的。
 
 ## 專案結構
 
 ```
-├── index.js                          # 入口（autojoin + 音樂；有 GEMINI_API_KEY 時再載入 AI）
+├── index.js                          # 入口（依 utils/features.js 載入 autojoin、音樂；有 GEMINI_API_KEY 時再載入 AI）
+├── profile.js                        # 精簡版的預設值（Bot 狀態、隨機回覆區段、AI 範圍鎖定、備份清單）
 ├── admin/                            # 管理 API，給 admin-panel 呼叫（設定 ADMIN_AGENT_TOKEN 才啟動）
 ├── handlers/
 │   ├── autoJoinHandler.js            # /autojoin、斷線恢復
@@ -23,7 +25,8 @@ Mousebot 的精簡版，只保留這些功能：
 │   ├── musicplayer/                  # 音樂播放（線上 / 本地 / 佇列 / 快取 / 響度正規化 / 重啟後接續播放）
 │   └── ai/                           # AI 聊天（單一人格）：aiHandler 指令與訊息、aiCore 群組歷史與呼叫、persona 固定人格、
 │                                     #   memeStore 表情包、t2sTable 繁轉簡對照表（表情包關鍵詞比對用）
-├── tools/importNekowhale.js          # 匯入大肥魚表情包（見「表情包」）
+├── examples/memes/importNekowhale.js # 範例：匯入大肥魚表情包（見「範例：匯入大肥魚表情包」）
+├── scripts/sync-from-mousebot.js     # 從正式版同步共用檔（npm run sync，清單在 sync.json）
 ├── utils/
 │   ├── processGuards.js              # 全域錯誤處理、SIGTERM 正常關機（onShutdown 關閉前動作）
 │   ├── config.js                     # 擁有者權限（OWNER_USER_ID）
@@ -33,6 +36,7 @@ Mousebot 的精簡版，只保留這些功能：
 │   ├── health.js                     # /healthz 健康檢查端點
 │   ├── logger.js                     # 統一 log 工具（LOG_LEVEL）
 │   ├── bootSummary.js
+│   ├── features.js                   # 模組登錄表（FEATURES、intents、開機時依序 setup）
 │   ├── alert.js                      # Discord webhook 告警（AI 全體每日額度用完時）
 │   └── rateLimiter.js                # AI 每人呼叫頻率限制
 ├── data/                             # 執行時產生：設定檔、播放快照、data/music 本地音樂庫與下載快取、data/prompts AI 人格
@@ -53,7 +57,8 @@ Mousebot 的精簡版，只保留這些功能：
 | `OWNER_USER_ID` | 建議 | 擁有者使用者 ID（逗號分隔多個）。未設定時沒有人能用 `/autojoin` 變更目標頻道 |
 | `TARGET_VOICE_CHANNEL_ID` | | 第一次啟動時的 autojoin 目標頻道；之後以 `/autojoin` 設定（存在 `data/autojoin.json`）為準 |
 | `GEMINI_API_KEY` | | 填了才啟用 AI 聊天；留空＝不啟用 |
-| `AI_PERSONA` | | AI 人格代號（預設 `bigfish`），讀 `data/prompts/modes/<代號>.md`，見下方「人格」 |
+| `AI_PERSONA` | | AI 人格代號（預設 `default`；有設 `AI_DEFAULT_MODE` 時用它），讀 `data/prompts/modes/<代號>.md`，見下方「人格」 |
+| `AI_SCOPE_LOCK` | | AI 範圍鎖定，精簡版預設 `single`（單一人格）；`single:<代號>` 直接指定人格，`off` 解除鎖定 |
 | `ADMIN_AGENT_TOKEN` | | 填了才啟動管理 API（至少 32 字元，要和 admin-panel 的 `PANEL_TOKEN_<代號>` 相同），見「管理面板」 |
 
 其他選填項目（`LOG_LEVEL`、`DEV_GUILD_ID`、`HEALTH_PORT`、`MUSIC_RESUME`、AI 用量限制…）見 `.env.example`。
@@ -135,7 +140,8 @@ data/prompts/
 └── _group.md               # 選填：群聊規則；缺檔時用內建版本（與正式版內容相同）
 ```
 
-`AI_PERSONA` 預設是 `bigfish`（大肥魚），也就是讀 `data/prompts/modes/bigfish.md`；換人格要改 `.env` 並重啟。
+`AI_PERSONA` 預設是 `default`（有設 `AI_DEFAULT_MODE` 時用它），也就是讀 `data/prompts/modes/default.md`；換人格要改 `.env` 並重啟，
+例如大肥魚就設 `AI_PERSONA=bigfish`、放 `data/prompts/modes/bigfish.md`。
 找不到人格檔時改用內建的通用人格，開機摘要會標成 ⚠️。
 
 人格 prompt 要配合程式送給模型的格式：每則訊息開頭是 `【發言者：顯示名稱 (@帳號)】`，
@@ -144,24 +150,11 @@ data/prompts/
 ### 表情包
 
 人格可以有自己的表情包，放在 `data/memes/<AI_PERSONA>/`（跟 prompts 一樣不隨程式碼部署）。
-
-**大肥魚表情包**（[dsh-nekowhale-stickers](https://github.com/Loping151/dsh-nekowhale-stickers)，286 張）：
-
-```sh
-node tools/importNekowhale.js              # 產生 data/memes/bigfish/memes.json（標註＋GIF 網址）
-node tools/importNekowhale.js --with-gpt   # 另外加上「大肥鱼和GPT娘」雙人套組
-node tools/importNekowhale.js --prefetch   # 順便把 GIF 全部先下載（約 358MB；預設用到才下載）
-# Docker：docker compose exec mousebot-lite node tools/importNekowhale.js
-```
-
-GIF 用到時才從 kiriyuki.com 下載，快取在 `data/memes/bigfish/.cache/`。
-表情包作者：B站 [可以叫我云大人/雾雪](https://space.bilibili.com/103739)，[kiriyuki.com](https://kiriyuki.com) 制作；
-標註資料 CC BY-NC 4.0，圖片版權歸原作者，**僅限非商業使用並保留作者連結**。
-
-**自己的圖**：直接把圖放進資料夾，檔名就是名字；`memes.json` 可寫 `{ "名字": "什麼時候用" }` 補說明。
+直接把圖放進資料夾，檔名就是名字；`memes.json` 可寫 `{ "名字": "什麼時候用" }` 補說明。
+也可以用套組格式的 `memes.json`（每張圖的名字、情緒、標籤、用途與網址，用到時才下載），見「範例：匯入大肥魚表情包」。
 
 ```
-data/memes/bigfish/
+data/memes/<AI_PERSONA>/
 ├── 嘴饞.png          # png / jpg / jpeg / gif / webp，單檔 9.5MB 以內
 └── memes.json
 ```
@@ -180,6 +173,22 @@ AI 在回覆最後單獨一行寫 `[表情:關鍵詞]`，送出時換成圖片�
 增刪檔案不用重啟（約 5 秒內生效）。讀歷史時 Bot 自己發過的表情包會還原成 `[表情:名字]`，不重新下載圖片。
 資料夾不存在或沒有圖時功能關閉。
 
+### 範例：匯入大肥魚表情包
+
+**大肥魚表情包**（[dsh-nekowhale-stickers](https://github.com/Loping151/dsh-nekowhale-stickers)，286 張），匯入到 `data/memes/bigfish/`
+（人格代號用 `--persona` 指定；沒寫時用 `AI_PERSONA`，兩個都沒有就報錯）：
+
+```sh
+node examples/memes/importNekowhale.js --persona bigfish              # 產生 data/memes/bigfish/memes.json（標註＋GIF 網址）
+node examples/memes/importNekowhale.js --persona bigfish --with-gpt   # 另外加上「大肥鱼和GPT娘」雙人套組
+node examples/memes/importNekowhale.js --persona bigfish --prefetch   # 順便把 GIF 全部先下載（約 358MB；預設用到才下載）
+# Docker：docker compose exec mousebot-lite node examples/memes/importNekowhale.js --persona bigfish
+```
+
+GIF 用到時才從 kiriyuki.com 下載，快取在 `data/memes/bigfish/.cache/`。
+表情包作者：B站 [可以叫我云大人/雾雪](https://space.bilibili.com/103739)，[kiriyuki.com](https://kiriyuki.com) 制作；
+標註資料 CC BY-NC 4.0，圖片版權歸原作者，**僅限非商業使用並保留作者連結**。
+
 ## 管理面板
 
 網頁管理面板是獨立的服務 admin-panel，一個網頁同時管理正式版與精簡版。精簡版在面板上提供：
@@ -190,41 +199,34 @@ AI 在回覆最後單獨一行寫 `[表情:關鍵詞]`，送出時換成圖片�
 - `.env` 設定 `ADMIN_AGENT_TOKEN`（至少 32 字元），容器裡再設 `ADMIN_HOST=0.0.0.0` 讓面板連進來；**不要讓這個 port 對外公開**。
 - 面板的 `PANEL_BOTS` 加上 `lite=http://mousebot-lite:3940`，並設定 `PANEL_TOKEN_LITE`（= 這裡的 `ADMIN_AGENT_TOKEN`）。
 - 容器以 `restart: unless-stopped` 執行時設 `RESTART_MANAGED=1`，面板的「重新啟動」按鈕才會顯示成重新啟動（而不是關閉）。
-- `admin/agent.js`、`admin/backup.js`、`admin/http.js`、`admin/discordInfo.js`、`admin/voiceState.js`、`admin/cacheTools.js`、
-  `admin/api/overview.js`、`admin/api/logs.js` 與正式版相同；`admin/api/` 其餘檔案是精簡版自己的版本。
+- `admin/` 的檔案都和正式版相同：頁面與路由依 `utils/features.js` 的模組狀態與 AI 範圍鎖定決定（精簡版鎖定單一人格），備份清單與 Bot 代號讀 `profile.js`。
 
 ## 從正式版同步
 
-`handlers/`、`utils/` 與 `admin/` 多數檔案和正式版相同，但**下列檔案不能直接覆蓋**，因為正式版多了精簡版沒有的功能，
-覆蓋會讓精簡版 `require` 到不存在的模組，或改掉精簡版刻意不同的行為：
+`handlers/`、`utils/`、`admin/`、`test/`、`examples/memes/` 的共用檔和正式版逐位元組相同（行尾一律 LF），清單在 `sync.json`：
 
-| 檔案 | 與正式版的差異 |
+| 欄位 | 內容 |
 |---|---|
-| `handlers/presenceHandler.js` | 預設狀態文字是「正在聽 皮鼓」（`DEFAULT_PRESENCE`），其餘相同 |
-| `handlers/ai/aiChance.js` | 隨機回覆區段預設 `1/2`（正式版 `0/2`） |
-| `utils/heartbeat.js` | 精簡版沒有這個檔案 |
-| `admin/api/index.js`、`voice.js`、`system.js`、`ai.js`、`prompts.js` | 精簡版自己的版本（路由較少、回報的 `features` 不同、備份的檔案清單不同、單一人格） |
-| `handlers/ai/aiHandler.js` | 精簡版自己的版本：只有 ask / clear / chance，單一人格 |
-| `handlers/ai/aiCore.js` | 由正式版精簡：只留群組歷史（單一人格），沒有多人格歷史、工具階段、語音；函式名稱與正式版一致，修正可對照同名函式手動套用 |
-| `handlers/ai/aiUtils.js` | 拿掉 TTS（`isAITTSEnabled`、`setAITTSEnabled`、`speakWithTTS`） |
-| `handlers/ai/persona.js` | 精簡版專用（取代正式版的 `aiScope.js`、`modeSelector.js`） |
+| `upstream` | 正式版的 repo、本機路徑（預設 `../Mousebot`）與目前對齊的 commit（`ref`） |
+| `files` | 共用檔：一律以正式版為準，**不要在精簡版直接改**，改正式版後再同步 |
+| `mbOnly` | 只在正式版的檔案（語音、TTS、通知、分帳、自訂回應…），不複製 |
+| `liteOwned` | 精簡版自己的檔案：`profile.js`、`test/profile.test.js`、`test/liteBaseline.test.js` |
 
-`handlers/ai/memeStore.js`、`t2sTable.js` 是精簡版獨有（正式版沒有），同步時不用比對。
-`handlers/ai/` 其餘檔案（`aiSettings`、`geminiClient`、`aiQuota`、`aiChance`、`aiMemoryState`、`aiMessageLog`、
-`chatSanitize`、`promptStore`、`searchGrounding`、`tokenTracker`）與 `utils/dataDir.js`、`utils/alert.js` 和正式版相同。
-
-同步方式：先在兩個 repo 之間比對差異；表中列出的檔案以外，有差異就是落後，直接複製正式版的版本：
+精簡版刻意不同的預設值（Bot 狀態「皮鼓」、隨機回覆區段 `1/2`、AI 鎖定單一人格、備份清單與檔名）都在 `profile.js`，
+共用程式碼從那裡讀；精簡版沒有的模組由 `utils/features.js` 判斷「檔案不存在」自動略過。
 
 ```bash
-# 在 Mousebot-lite 目錄；../Mousebot 是正式版
-for f in $(git ls-files handlers utils admin); do
-  diff -q --strip-trailing-cr "../Mousebot/$f" "$f" >/dev/null || echo "不同：$f"
-done
+# 在 Mousebot-lite 目錄；../Mousebot 是正式版（已 commit）
+npm run sync              # 複製有差異的共用檔，並把 sync.json 的 ref 更新成正式版的 HEAD
+npm run sync -- --check   # 只檢查：共用檔不同、檔案缺少、有檔案沒歸類、共用檔用到精簡版沒有的套件，任一項就失敗
 ```
 
-若正式版新增了這些模組會用到的 npm 套件，再同步更新 `package.json`。
-正式版 `index.js` 的啟動流程有變動時（例如指令註冊、健康檢查、播放恢復），需手動套用到精簡版的 `index.js`。
-同步後執行 `npm run check` 確認沒有缺漏。
+- 正式版清單內的檔案有還沒 commit 的修改時，`npm run sync` 會拒絕執行（`ref` 必須指向真的包含這些內容的 commit）；
+  開發中要先試可以加 `--allow-dirty`，正式版 commit 後再跑一次更新 `ref`。
+- 正式版新增檔案時，`--check` 會列出「沒歸類」的檔案：共用的跑 `npm run sync -- --init` 重新產生 `files`，正式版專用的加進 `mbOnly`。
+- 共用檔用到新的 npm 套件時，要同步更新精簡版的 `package.json`。
+- 正式版 `index.js` 的啟動流程有變動時（例如指令註冊、健康檢查、播放恢復），需手動套用到精簡版的 `index.js`。
+- 同步後執行 `npm run check` 確認沒有缺漏；`test/liteBaseline.test.js` 記錄精簡版的現行行為，同步後也必須全綠。
 
 ## License
 

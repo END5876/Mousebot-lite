@@ -8,7 +8,8 @@
     "start": "node index.js",
     "test": "node --test \"test/*.test.js\"",
     "lint": "eslint .",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm test",
+    "sync": "node scripts/sync-from-mousebot.js"
   },
   "engines": {
     "node": ">=22"

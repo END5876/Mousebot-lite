@@ -6,6 +6,7 @@ const path = require('path');
 const { ActivityType } = require('discord.js');
 const logger = require('../utils/logger');
 const { readJson, writeJsonAtomic } = require('../utils/jsonStore');
+const profile = require('../profile');
 
 const PRESENCE_PATH = path.join(__dirname, '..', 'data', 'presence.json');
 
@@ -20,8 +21,7 @@ const ACTIVITY_TYPES = {
   custom: ActivityType.Custom,
 };
 const MAX_TEXT = 128;
-// 精簡版的預設狀態（與正式版刻意不同；其餘內容與正式版相同）
-const DEFAULT_PRESENCE = { status: 'online', type: 'listening', text: '皮鼓' };
+const DEFAULT_PRESENCE = { ...profile.presenceDefault }; // 預設值在 profile.js（各 Bot 不同）
 
 function normalize(cfg) {
   if (!cfg || typeof cfg !== 'object') return null;

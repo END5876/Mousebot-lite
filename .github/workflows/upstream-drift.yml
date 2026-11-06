@@ -1,0 +1,26 @@
+name: Upstream drift
+
+# 每週和正式版（Mousebot）的 main 比對一次共用檔：
+# 失敗代表正式版有新改動還沒同步過來，在本機跑 npm run sync 後 commit 即可
+on:
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/checkout@v4
+        with:
+          repository: END5876/Mousebot
+          ref: main
+          path: .upstream
+
+      - run: node scripts/sync-from-mousebot.js --check --from .upstream

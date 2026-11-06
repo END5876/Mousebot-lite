@@ -1,5 +1,5 @@
 'use strict';
-// admin/api/system.js（精簡版）— Bot 狀態文字、以 Bot 身分發訊息、Slash 指令同步、音樂快取、設定備份、重新啟動
+// admin/api/system.js — Bot 狀態文字、以 Bot 身分發訊息、Slash 指令同步、音樂快取、設定備份、重新啟動
 // （操作紀錄在 admin-panel：處理函式的 audit('…') 會經由回應標頭交給面板記錄）
 
 const { PermissionFlagsBits } = require('discord.js');
@@ -10,25 +10,19 @@ const { cacheStats, clearDownloads } = require('../cacheTools');
 const { TEXT_TYPES, VOICE_TYPES, guildSummary, guildChannels } = require('../discordInfo');
 const { HttpError, FileResponse, oneOf, snowflake, str, requireReady } = require('../http');
 const { createBackupTools, BackupError } = require('../backup');
+const profile = require('../../profile');
 
 const SYNC_COOLDOWN_MS = 30 * 1000;
 const RESTART_DELAY_MS = 500;
 const SUBCOMMAND_TYPES = [1, 2]; // SUB_COMMAND、SUB_COMMAND_GROUP
 
-// 設定備份包含的檔案。不含任何金鑰（admin-session-secret、cookies），也不含暫存或可重建的檔案。
-// AI 對話狀態（aiMemoryState.json 清除時間、aiMessageLog.json 回覆紀錄）涉及使用者隱私，刻意不放進備份
-// 與正式版的差別：只有精簡版有的設定檔（自動加入、閒置自動停止、Bot 狀態、AI 插話機率）
-const SETTINGS_FILES = [
-  'autojoin.json', 'voiceMonitorEnabled.json', 'presence.json', 'replyChance.json', 'replyChanceDisabled.json',
-];
-const STATS_FILES = ['tokenUsage.json', 'musicPlayCount.json'];
-
+// 設定備份包含的檔案、共用人格規則與備份檔名開頭都在 profile.js 的 backup（各 Bot 不同；不含金鑰與隱私資料的理由見該檔）。
 // AI 人格（data/prompts/ 的共用規則與 modes/*.md，不含 .history 版本紀錄）一併備份
 const backupTools = createBackupTools({
-  app: 'mousebot-lite',
-  settingsFiles: SETTINGS_FILES,
-  statsFiles: STATS_FILES,
-  sharedPrompts: ['_general', '_group'],
+  app: profile.backup.app,
+  settingsFiles: profile.backup.settingsFiles,
+  statsFiles: profile.backup.statsFiles,
+  sharedPrompts: profile.backup.sharedPrompts,
 });
 
 const shorten = (text, max = 60) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -154,7 +148,7 @@ module.exports = function registerSystem(router, client) {
     const backup = backupTools.build(includeStats);
     log(`下載設定備份（${Object.keys(backup.files).length} 個檔案${includeStats ? '，含統計資料' : ''}）`);
     return new FileResponse({
-      filename: `mousebot-lite-backup-${stamp()}.json`,
+      filename: `${profile.backup.filePrefix}-backup-${stamp()}.json`,
       contentType: 'application/json; charset=utf-8',
       body: JSON.stringify(backup, null, 2),
     });

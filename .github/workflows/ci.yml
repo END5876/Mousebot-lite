@@ -31,3 +31,25 @@ jobs:
         run: |
           npm audit --omit=dev --json > audit.json || true
           node .github/scripts/audit.js audit.json
+
+  # 共用檔要和 sync.json 記錄的正式版 commit（upstream.ref）逐檔相同，清單也要涵蓋兩邊 roots 底下的所有檔案
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 讀取 upstream.ref
+        id: upstream
+        run: echo "ref=$(node -p "require('./sync.json').upstream.ref")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: END5876/Mousebot
+          ref: ${{ steps.upstream.outputs.ref }}
+          path: .upstream
+
+      - run: node scripts/sync-from-mousebot.js --check --from .upstream

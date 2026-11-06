@@ -8,23 +8,16 @@ const { Client, GatewayIntentBits, Collection, MessageFlags } = require('discord
 const logger = require('./utils/logger');
 const bootSummary = require('./utils/bootSummary');
 const { OWNER_USER_IDS } = require('./utils/config');
-const { syncCommands } = require('./utils/commandSync');
+const { syncCommands, clientSyncOptions } = require('./utils/commandSync');
 const { startHealthServer } = require('./utils/health');
 const { startAgentServer } = require('./admin/agent');
+
+// ── 核心功能（不受 FEATURES 控制）─────────────────────────
 const { applyPresence } = require('./handlers/presenceHandler');
-
-// ── 導入處理器（精簡版：autojoin + 音樂 + 選用的單一人格 AI 聊天）──
-// handlers/ 與 utils/ 多數檔案與正式版 Mousebot 相同；刻意不同的檔案列在 README「從正式版同步」。
-const { setupAutoJoinCommands }  = require('./handlers/autoJoinHandler');
-
-// ── AI 對話（選用）：有設定 GEMINI_API_KEY 才啟用 ─────────
-// 沒設定時連模組都不載入（不載入 sharp、不讀 data/prompts），也不多要訊息相關的 intents。
-const AI_ENABLED = !!process.env.GEMINI_API_KEY?.trim();
-
-// ── 音樂模組 ───────────────────────────────────────────────
-const { setupUnifiedCommands, resumeSavedSessions, startWebSync } = require('./handlers/musicplayer/unifiedQueue');
-const { setupOnlineMusicEngine } = require('./handlers/musicplayer/onlineMusicHandler');
-const { setupLocalMusicEngine }  = require('./handlers/musicplayer/localMusicHandler');
+// 其他功能模組由 utils/features.js 的登錄表決定要不要載入（環境變數 FEATURES）。
+// 精簡版只有 autojoin、音樂，以及選用的單一人格 AI（有設定 GEMINI_API_KEY 才啟用）；
+// 正式版才有的模組檔案不存在，登錄表會自動略過。handlers/ 與 utils/ 的共用檔由 npm run sync 從正式版同步（見 README）。
+const features = require('./utils/features');
 
 // ── 創建客戶端 ─────────────────────────────────────────────
 // 只有 AI 聊天會監聽 messageCreate：啟用時才要 GuildMessages / MessageContent
@@ -32,12 +25,8 @@ const { setupLocalMusicEngine }  = require('./handlers/musicplayer/localMusicHan
 const client = new Client({
   // 預設只允許 @使用者；擋掉 @everyone / @here / 身分組提及。
   allowedMentions: { parse: ['users'] },
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers,
-    ...(AI_ENABLED ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : []),
-  ]
+  // 只要求已啟用模組需要的 intents（Guilds、GuildVoiceStates、GuildMembers；AI 啟用時再加 GuildMessages、MessageContent）
+  intents: features.intents().map(k => GatewayIntentBits[k]),
 });
 
 // 致命錯誤與 SIGTERM / SIGINT 時刻意不呼叫 client.destroy()：
@@ -51,21 +40,20 @@ if (OWNER_USER_IDS.size === 0) {
 // ── Slash Command 集合 ─────────────────────────────────────
 client.commands = new Collection();
 
-// ── 註冊模組處理器 ─────────────────────────────────────────
-setupAutoJoinCommands(client);
+// ── 錯誤處理 ──────────────────────────────────────────────
+// 要在模組 setup 之前掛上：EventEmitter 發出 'error' 卻沒有監聽器時會直接丟例外，讓程序崩潰。
+client.on('error', error => {
+  logger.error('Discord', '客戶端錯誤：', error);
+});
+client.on('shardError', error => {
+  logger.error('Discord', 'Shard 錯誤：', error);
+});
 
-if (AI_ENABLED) {
-  require('./handlers/ai/aiHandler').setupAICommands(client);
-} else {
-  bootSummary.report('AI 對話 (/ai)', 'off', '未設定 GEMINI_API_KEY，AI 功能停用');
-}
-
-// ── 音樂：指令與本地引擎在登入前就註冊 ────────────────────
-// 過去要等 clientReady 後才註冊 /play、/music，這段期間有人下指令會得到「找不到指令」。
-// 本地引擎不依賴網路可立即注入；線上引擎（需檢查 yt-dlp / bgutil）在 ready 後非同步注入，
+// ── 註冊各模組處理器（依 utils/features.js 的清單順序）────
+// 音樂的指令與本地引擎也在登入前就註冊：過去要等 clientReady 後才註冊 /play、/music，
+// 這段期間有人下指令會得到「找不到指令」。線上引擎（需檢查 yt-dlp / bgutil）在 ready 後非同步注入，
 // 注入前呼叫線上功能時各呼叫點會回覆「引擎初始化中」。
-setupLocalMusicEngine(client);
-setupUnifiedCommands(client);
+features.setupModules(client);
 
 // ── Slash Command 互動處理 ─────────────────────────────────
 client.on('interactionCreate', async interaction => {
@@ -111,16 +99,13 @@ client.on('interactionCreate', async interaction => {
 // ── 註冊 Slash Commands 到 Discord ────────────────────────
 // 指令內容沒變就不重新 PUT；設定 DEV_GUILD_ID 時改註冊到測試伺服器（立即生效）。
 async function registerSlashCommands() {
-  const commands = [...client.commands.values()].map(cmd => cmd.data.toJSON());
-  const devGuildId = process.env.DEV_GUILD_ID?.trim() || null;
+  const options = clientSyncOptions(client);
+  const { devGuildId } = options;
 
   try {
     logger.debug('Boot', '正在同步 Slash Commands...');
     const { skipped, scope, count } = await syncCommands({
-      commands,
-      token: process.env.DISCORD_TOKEN,
-      clientId: process.env.CLIENT_ID,
-      devGuildId,
+      ...options,
       force: process.env.FORCE_COMMAND_SYNC === '1',
     });
     const where = scope === 'global' ? '全域' : `測試伺服器 ${devGuildId}`;
@@ -139,39 +124,37 @@ async function registerSlashCommands() {
 client.once('clientReady', async () => {
   logger.success('Discord', `已登入為 ${client.user.tag}（${client.guilds.cache.size} 個伺服器）`);
 
-  // 狀態文字可以在管理面板修改（data/presence.json），沒有設定時是「正在聽 皮鼓」
+  // 狀態文字可以在管理面板修改（data/presence.json），沒有設定時用 profile.js 的預設（「正在聽 皮鼓」）
   applyPresence(client);
 
-  // 線上音樂引擎（含 yt-dlp / bgutil 檢查）與指令同步彼此獨立，並行處理
+  // 線上音樂引擎（含 yt-dlp / bgutil 檢查）與指令同步彼此獨立，並行處理；音樂停用時跳過
+  const music = features.get('music');
   await Promise.all([
-    setupOnlineMusicEngine(),
+    music ? features.load('handlers/musicplayer/onlineMusicHandler').setupOnlineMusicEngine() : null,
     registerSlashCommands(),
   ]);
 
   // ── 所有模組都已回報狀態，統一印出開機摘要 ────────────
   // 網頁「正在播放」同步（要在開機摘要之前，才會列進摘要表）
-  startWebSync(client);
+  if (music) music.startWebSync(client);
 
   bootSummary.print();
 
   // ── 接續重啟前的音樂播放（需在線上引擎注入之後）──────
-  const resumed = await resumeSavedSessions(client);
-  if (resumed > 0) logger.success('MusicSession', `已恢復 ${resumed} 個伺服器的播放`);
+  if (music) {
+    const resumed = await music.resumeSavedSessions(client);
+    if (resumed > 0) logger.success('MusicSession', `已恢復 ${resumed} 個伺服器的播放`);
+  }
 });
 
 startHealthServer(client);
 // 管理 API：給 admin-panel 服務呼叫（設定 ADMIN_AGENT_TOKEN 才會啟動）
 startAgentServer(client, require('./admin/api'));
 
-// ── 錯誤處理 ──────────────────────────────────────────────
-client.on('error', error => {
-  logger.error('Discord', '客戶端錯誤：', error);
-});
-
 // ── 登入 ──────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN).catch(error => {
   logger.error('Discord', `登入失敗：${error.message}`);
-  if (AI_ENABLED && /disallowed intents/i.test(error.message)) {
+  if (features.isEnabled('ai') && /disallowed intents/i.test(error.message)) {
     logger.error('Discord', '已設定 GEMINI_API_KEY（AI 聊天需要 Message Content Intent）：請到 Discord Developer Portal → Bot 開啟 Message Content Intent，或移除 GEMINI_API_KEY 停用 AI');
   }
   process.exit(1);

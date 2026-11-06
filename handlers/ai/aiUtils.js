@@ -1,6 +1,6 @@
-// handlers/ai/aiUtils.js（精簡版）
-// 與正式版 Mousebot 的 aiUtils.js 相同，只拿掉 TTS（AI 回覆朗讀）相關的部分：
-// 精簡版沒有 TTS 模組，所以沒有 isAITTSEnabled / setAITTSEnabled / speakWithTTS。
+// handlers/ai/aiUtils.js
+// AI 對話共用的工具函式：圖片／emoji／embed 處理、訊息分割、提及轉換、輸入中提示、Bot 訊息脈絡紀錄。
+// AI 回覆朗讀（TTS）不在這裡，放在 handlers/ai/aiTTS.js，透過 features.get('aiTts') 取得；沒有 TTS 模組的版本沒有那個檔案。
 const logger = require('../../utils/logger');
 const sharp = require('sharp'); // 引入 sharp 進行圖片壓縮
 // 關閉 libvips 的 operation cache（預設最多 50MB）：每張圖只處理一次，結果已由下方 imageCache 快取，這層純屬重複

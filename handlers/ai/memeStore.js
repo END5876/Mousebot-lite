@@ -1,17 +1,18 @@
-// handlers/ai/memeStore.js（精簡版專用）
+// handlers/ai/memeStore.js（MouseBot 與 mousebot-lite 共用，兩邊內容相同）
 // 人格專屬的表情包：AI 在回覆裡寫 [表情:關鍵詞]，送出時換成圖片附件。
 //
-// 圖庫放在資料目錄（跟 prompts 一樣不隨程式碼部署）：data/memes/<AI_PERSONA>/，兩種寫法可以並用：
+// 圖庫放在資料目錄（跟 prompts 一樣不隨程式碼部署）：data/memes/<人格代號>/，每個人格各自一套，兩種寫法可以並用：
 //
 //   1. 直接放圖：<名字>.png|jpg|jpeg|gif|webp，檔名（不含副檔名）就是名字；
 //      memes.json 可以寫成 { "名字": "什麼時候用" } 補說明。
 //   2. 套組清單：memes.json 寫成 { "stickers": [ { id, name, emotion, tags, use, url, hash } ] }，
 //      圖片用到時才從 url 下載，快取在 .cache/<hash>.<副檔名>。
-//      大肥魚表情包用 `node tools/importNekowhale.js` 產生（見 README）。
+//      範例匯入工具：`examples/memes/importNekowhale.js`（見 README）。
 //
+// 對外函式都可以傳人格代號 key（預設 persona.defaultMode()）；代號不合法時視為沒有圖庫。
 // 解析 [表情:關鍵詞]（兩邊先繁轉簡、英文轉小寫再比）：名字／情緒／標籤完全相同的一起當候選，太少（< MIN_POOL）再併入
 // 名字／標籤／用途包含關鍵詞的；候選裡避開最近送過的、優先挑送過次數最少的。張數少（≤ INDEX_MODE_MAX）時 prompt 列出每一張；多的時候只列情緒與常用關鍵詞。
-// 資料夾不存在或沒有圖時整個功能關閉。增刪檔案不用重啟（每 RELOAD_CHECK_MS 重新掃描）。
+// 資料夾不存在或沒有圖時整個功能關閉。增刪檔案不用重啟（每個人格各自每 RELOAD_CHECK_MS 重新掃描）。
 //
 // 送出的附件檔名用 meme-<雜湊>.<副檔名>（Discord 會改掉非 ASCII 檔名），
 // 讀歷史時再用雜湊查回名字，把 Bot 自己發過的表情包還原成 [表情:名字] 文字，不重新下載圖片。
@@ -25,6 +26,7 @@ const crypto = require('crypto');
 const logger = require('../../utils/logger');
 const { dataPath } = require('../../utils/dataDir');
 const persona = require('./persona');
+const { MODE_KEY_RE } = require('./aiSettings');
 const T2S_PAIRS = require('./t2sTable');
 
 const RELOAD_CHECK_MS  = 5000;
@@ -62,6 +64,7 @@ const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
 
 /**
  * @typedef {object} Meme
+ * @property {string} persona  屬於哪個人格的圖庫
  * @property {string} id       唯一鍵（附件雜湊用它算）
  * @property {string} name     給 AI 看的名字
  * @property {string} emotion
@@ -75,14 +78,19 @@ const ATTACHMENT_RE    = /^meme-([0-9a-f]{10})\.[a-z0-9]+$/i;
  */
 
 const emptyCache = () => ({ dir: null, checkedAt: 0, list: [], index: [], byHash: new Map(), byFileKey: new Map(), prompt: '' });
-let cache = emptyCache();
-const recent = [];
+const NO_LIBRARY = Object.freeze(emptyCache());     // 人格代號不合法時用（不掃描任何資料夾）
+const caches = new Map();                           // 人格代號 → 掃描結果（各自每 RELOAD_CHECK_MS 重新掃描）
+const recent = [];                                  // `${人格}\0${id}`
 const inflight = new Map();
-const useCount = new Map();                         // 每張送過幾次（只在記憶體，給 pickRandom 輪流用）
+const useCount = new Map();                         // 每張送過幾次（只在記憶體，給 pickRandom 輪流用；鍵同 recent）
 let downloadBlockedUntil = 0;
 
-function memeDir() {
-    return dataPath('memes', persona.getPersonaKey());
+const defaultKey = () => persona.defaultMode();
+const memeKey = meme => `${meme.persona}\0${meme.id}`;
+
+/** 人格的圖庫資料夾；代號不合法時回傳 null（防止路徑穿越，整個功能視為關閉） */
+function memeDir(key) {
+    return typeof key === 'string' && MODE_KEY_RE.test(key) ? dataPath('memes', key) : null;
 }
 
 function hashId(id) {
@@ -117,7 +125,7 @@ function readManifest(dir) {
     }
 }
 
-function fromKitEntry(s) {
+function fromKitEntry(s, key) {
     const name = clean(s?.name);
     const url  = typeof s?.url === 'string' && /^https:\/\//i.test(s.url) ? s.url : null;
     if (!name || !url) return null;
@@ -125,14 +133,14 @@ function fromKitEntry(s) {
     const ext = (path.extname(new URL(url).pathname) || '.gif').toLowerCase();
     if (!IMAGE_EXTS.has(ext)) return null;
     return {
-        id, name, emotion: clean(s.emotion),
+        persona: key, id, name, emotion: clean(s.emotion),
         tags: Array.isArray(s.tags) ? s.tags.map(clean).filter(Boolean) : [],
         use: clean(s.use), file: null, url, ext, hash: hashId(id),
         cacheKey: (/^[0-9a-f]{6,40}$/i.test(s.hash ?? '') ? s.hash : hashId(id)).toLowerCase(),
     };
 }
 
-function scan(dir) {
+function scan(dir, key) {
     const manifest = readManifest(dir);
     /** @type {Meme[]} */
     const list = [];
@@ -157,12 +165,12 @@ function scan(dir) {
         try {
             if (fs.statSync(file).size > MAX_FILE_BYTES) { logger.warn('Meme', `略過過大的表情包：${entry.name}`); continue; }
         } catch { continue; }
-        add({ id: name, name, emotion: '', tags: [], use: clean(descs[name]), file, url: null, ext, hash: hashId(name), cacheKey: '' });
+        add({ persona: key, id: name, name, emotion: '', tags: [], use: clean(descs[name]), file, url: null, ext, hash: hashId(name), cacheKey: '' });
     }
 
     // 2. 套組清單
     if (Array.isArray(manifest.stickers)) {
-        for (const s of manifest.stickers) add(fromKitEntry(s));
+        for (const s of manifest.stickers) add(fromKitEntry(s, key));
     }
     return list;
 }
@@ -193,13 +201,15 @@ function buildPrompt(list) {
     ].filter(Boolean).join('\n');
 }
 
-function load() {
-    const dir = memeDir();
+function load(key = defaultKey()) {
+    const dir = memeDir(key);
+    if (!dir) return NO_LIBRARY;
     const now = Date.now();
-    if (cache.dir === dir && now - cache.checkedAt < RELOAD_CHECK_MS) return cache;
-    const prevSize = cache.dir === dir ? cache.list.length : -1;
-    const list = scan(dir);
-    cache = {
+    const prev = caches.get(key);
+    if (prev && prev.dir === dir && now - prev.checkedAt < RELOAD_CHECK_MS) return prev;
+    const prevSize = prev && prev.dir === dir ? prev.list.length : -1;
+    const list = scan(dir, key);
+    const cache = {
         dir, checkedAt: now, list,
         byHash: new Map(list.map(m => [m.hash, m])),
         byFileKey: new Map(list.map(m => [fileKey(m).toLowerCase(), m])),
@@ -210,17 +220,32 @@ function load() {
         })),
         prompt: buildPrompt(list),
     };
+    caches.set(key, cache);
     if (list.length !== prevSize && list.length > 0) logger.info('Meme', `已載入 ${list.length} 張表情包（${dir}）`);
     return cache;
 }
 
-function listMemes() {
-    return load().list;
+function listMemes(key = defaultKey()) {
+    return load(key).list;
+}
+
+/**
+ * 有圖的圖庫（data/memes/ 底下的人格資料夾），依代號排序；開機摘要用
+ * @returns {{ key: string, count: number }[]}
+ */
+function listLibraries() {
+    let entries = [];
+    try { entries = fs.readdirSync(dataPath('memes'), { withFileTypes: true }); } catch { return []; }
+    return entries
+        .filter(e => e.isDirectory() && MODE_KEY_RE.test(e.name))
+        .map(e => ({ key: e.name, count: load(e.name).list.length }))
+        .filter(lib => lib.count > 0)
+        .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
 /** 放進 system instruction 的表情包說明；沒有圖庫時回傳空字串 */
-function getMemePrompt() {
-    return load().prompt;
+function getMemePrompt(key = defaultKey()) {
+    return load(key).prompt;
 }
 
 /**
@@ -229,10 +254,10 @@ function getMemePrompt() {
  */
 function pickRandom(candidates) {
     if (candidates.length === 0) return null;
-    const fresh = candidates.filter(m => !recent.includes(m.id));
+    const fresh = candidates.filter(m => !recent.includes(memeKey(m)));
     const pool = fresh.length ? fresh : candidates;
-    const minUse = Math.min(...pool.map(m => useCount.get(m.id) ?? 0));
-    const least = pool.filter(m => (useCount.get(m.id) ?? 0) === minUse);
+    const minUse = Math.min(...pool.map(m => useCount.get(memeKey(m)) ?? 0));
+    const least = pool.filter(m => (useCount.get(memeKey(m)) ?? 0) === minUse);
     return least[Math.floor(Math.random() * least.length)];
 }
 
@@ -241,10 +266,10 @@ function pickRandom(candidates) {
  * 完全相同（名字、情緒、標籤任一）的全部放進同一個候選池一起挑——不讓同名的那一張搶走整個情緒，
  * 例如「害怕」不會每次都送名字叫「害怕」的那張；完全相同的不到 MIN_POOL 張時，再併入「包含」的，避免一直重複同幾張。
  */
-function resolveMeme(keyword) {
+function resolveMeme(keyword, key = defaultKey()) {
     const q = normalize(keyword);
     if (!q) return null;
-    const { index } = load();
+    const { index } = load(key);
     const exact = index.filter(e => e.name === q || e.emotion === q || e.tags.includes(q));
     let pool = exact;
     if (exact.length < MIN_POOL) {
@@ -257,23 +282,25 @@ function resolveMeme(keyword) {
 }
 
 function remember(meme) {
-    recent.push(meme.id);
+    const k = memeKey(meme);
+    recent.push(k);
     while (recent.length > RECENT_AVOID) recent.shift();
-    useCount.set(meme.id, (useCount.get(meme.id) ?? 0) + 1);
+    useCount.set(k, (useCount.get(k) ?? 0) + 1);
 }
 
 /**
  * 從 AI 回覆抽出 [表情:關鍵詞]：標記一律從文字移除，認得的前 MAX_PER_REPLY 張留下。
  * @param {string} text
+ * @param {string} [key] 人格代號
  * @returns {{ text: string, memes: Meme[] }}
  */
-function extractMemes(text) {
+function extractMemes(text, key = defaultKey()) {
     if (typeof text !== 'string' || !text) return { text: text ?? '', memes: [] };
     const memes = [];
     const unknown = [];
     const cleaned = text.replace(TAG_RE, (_, keyword) => {
         if (memes.length < MAX_PER_REPLY) {
-            const meme = resolveMeme(keyword);
+            const meme = resolveMeme(keyword, key);
             if (meme && !memes.includes(meme)) { memes.push(meme); remember(meme); }
             else if (!meme) unknown.push(keyword.trim());
         }
@@ -288,7 +315,7 @@ function extractMemes(text) {
 }
 
 function cachePath(meme) {
-    return path.join(memeDir(), '.cache', `${meme.cacheKey}${meme.ext}`);
+    return path.join(memeDir(meme.persona), '.cache', `${meme.cacheKey}${meme.ext}`);
 }
 
 /** 本機已經有的圖檔（直接放的圖，或已下載過的快取）；沒有回傳 null */
@@ -327,7 +354,7 @@ async function download(meme) {
 }
 
 function smallPath(meme) {
-    return path.join(memeDir(), '.cache', SMALL_DIR, `${fileKey(meme)}${meme.ext}`);
+    return path.join(memeDir(meme.persona), '.cache', SMALL_DIR, `${fileKey(meme)}${meme.ext}`);
 }
 
 /**
@@ -393,7 +420,7 @@ async function shrink(src, meme) {
 
 /** 下載失敗時的替代：同情緒、本機已經有的圖（隨機、避開最近送過的）；都沒有回傳 null */
 function cachedSubstitute(meme) {
-    const { list } = load();
+    const { list } = load(meme.persona);
     const sameEmotion = meme.emotion
         ? list.filter(m => m !== meme && m.emotion === meme.emotion && (readySmall(m) || localFile(m)))
         : [];
@@ -404,13 +431,13 @@ function cachedSubstitute(meme) {
 function toSendable(file, meme) {
     const base = publicBase();
     if (base && path.basename(path.dirname(file)) === SMALL_DIR) {
-        return { url: `${base}/${encodeURIComponent(persona.getPersonaKey())}/${SMALL_DIR}/${path.basename(file)}` };
+        return { url: `${base}/${encodeURIComponent(meme.persona)}/${SMALL_DIR}/${path.basename(file)}` };
     }
     return { attachment: file, name: `meme-${meme.hash}${meme.ext}` };
 }
 
 /**
- * 表情包 → 要送出的圖（網址或附件，見 toSendable）。縮小版已經有就直接用（不需要原圖）；
+ * 表情包 → 要送出的圖（網址或附件，見 toSendable）。人格從 meme.persona 取。縮小版已經有就直接用（不需要原圖）；
  * 沒有才取原圖（遠端的先下載）再縮。下載失敗就改送已快取的同情緒圖，都沒有就略過，不影響文字回覆。
  * @param {Meme[]} memes
  * @returns {Promise<({ url: string } | { attachment: string, name: string })[]>}
@@ -434,24 +461,28 @@ async function toFiles(memes) {
 }
 
 /** Bot 自己發的附件是不是表情包：不是回傳 undefined；是的話回傳名字（雜湊對不到時回傳 null） */
-function memeTagOfAttachment(attachment) {
+function memeTagOfAttachment(attachment, key = defaultKey()) {
     const m = ATTACHMENT_RE.exec(attachment?.name ?? '');
     if (!m) return undefined;
-    return load().byHash.get(m[1].toLowerCase())?.name ?? null;
+    return load(key).byHash.get(m[1].toLowerCase())?.name ?? null;
 }
 
 /**
  * Bot 自己發的訊息內容是不是一則表情包網址（網址模式送出的）：不是回傳 undefined；
  * 是的話回傳名字（對不到時回傳 null）。只看目前的 MEME_PUBLIC_URL，換過網域後舊訊息會被當成一般網址。
+ * 人格從網址自己解析（<前綴>/<人格>/<SMALL_DIR>/<檔名>）；代號不合法時視為對不到（null）。
  */
 function memeTagOfContent(content) {
     const base = publicBase();
     if (!base || typeof content !== 'string') return undefined;
     const text = content.trim();
     if (!text.startsWith(`${base}/`)) return undefined;
-    const m = /^[^/]+\/[^/]+\/([0-9a-z]+)\.[a-z0-9]+$/i.exec(text.slice(base.length + 1));
+    const m = /^([^/]+)\/[^/]+\/([0-9a-z]+)\.[a-z0-9]+$/i.exec(text.slice(base.length + 1));
     if (!m) return undefined;
-    return load().byFileKey.get(m[1].toLowerCase())?.name ?? null;
+    let key;
+    try { key = decodeURIComponent(m[1]); } catch { return null; }
+    if (!MODE_KEY_RE.test(key)) return null;
+    return load(key).byFileKey.get(m[2].toLowerCase())?.name ?? null;
 }
 
 /**
@@ -473,6 +504,7 @@ function buildPayloads(chunks, files = []) {
 
 module.exports = {
     listMemes,
+    listLibraries,
     getMemePrompt,
     resolveMeme,
     extractMemes,
@@ -485,7 +517,8 @@ module.exports = {
     _internal: {
         hashId,
         normalize,
-        resetCache: () => { cache = emptyCache(); recent.length = 0; useCount.clear(); downloadBlockedUntil = 0; },
+        memeDir,
+        resetCache: () => { caches.clear(); recent.length = 0; useCount.clear(); downloadBlockedUntil = 0; },
         INDEX_MODE_MAX,
     },
 };

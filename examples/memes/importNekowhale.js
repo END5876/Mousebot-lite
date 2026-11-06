@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// tools/importNekowhale.js
+// examples/memes/importNekowhale.js（MouseBot 與 mousebot-lite 共用，兩邊內容相同）
 // 匯入「大肥鱼哈基米表情包」成人格表情包清單：data/memes/<人格>/memes.json（memeStore.js 的套組格式）。
 //
-//   node tools/importNekowhale.js                 匯入「大肥鱼」單人套組到 AI_PERSONA（預設 bigfish）
-//   node tools/importNekowhale.js --with-gpt      另外加上「大肥鱼和GPT娘」雙人套組
-//   node tools/importNekowhale.js --persona xxx   寫到別的人格
-//   node tools/importNekowhale.js --prefetch      順便把所有 GIF 先下載到 .cache/（大肥鱼約 358MB；預設用到才下載）
+//   node examples/memes/importNekowhale.js --persona xxx   匯入「大肥鱼」單人套組到人格 xxx（沒寫 --persona 時用 AI_PERSONA）
+//   node examples/memes/importNekowhale.js --with-gpt      另外加上「大肥鱼和GPT娘」雙人套組
+//   node examples/memes/importNekowhale.js --prefetch      順便把所有 GIF 先下載到 .cache/（大肥鱼約 358MB；預設用到才下載）
+// --persona 和 AI_PERSONA 都沒有時直接報錯，不會猜要寫到哪個人格。
 //
 // 資料來源：
 //   標註（情緒／標籤／用途）https://github.com/Loping151/dsh-nekowhale-stickers 的 meta/nekowhale.json（CC BY-NC 4.0）
@@ -18,7 +18,7 @@
 require('dotenv').config({ quiet: true });
 const fs   = require('fs');
 const path = require('path');
-const { dataPath } = require('../utils/dataDir');
+const { dataPath } = require('../../utils/dataDir');
 
 const META_URL     = 'https://raw.githubusercontent.com/Loping151/dsh-nekowhale-stickers/main/meta/nekowhale.json';
 const MANIFEST_URL = 'https://kiriyuki.com/api/manifest';
@@ -27,7 +27,7 @@ const UA           = 'nekowhale-stickers (+https://kiriyuki.com)';
 const SOURCE_REPO  = 'https://github.com/Loping151/dsh-nekowhale-stickers';
 
 function parseArgs(argv) {
-    const opts = { persona: process.env.AI_PERSONA?.trim() || 'bigfish', packs: ['大肥鱼'], prefetch: false };
+    const opts = { persona: process.env.AI_PERSONA?.trim() || null, packs: ['大肥鱼'], prefetch: false };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--with-gpt') opts.packs.push('大肥鱼和GPT娘');
@@ -35,6 +35,7 @@ function parseArgs(argv) {
         else if (a === '--persona') opts.persona = argv[++i];
         else throw new Error(`不認得的參數：${a}`);
     }
+    if (!opts.persona) throw new Error('請用 --persona <代號> 指定人格（或設定 AI_PERSONA）');
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(opts.persona ?? '')) throw new Error(`人格代號不合法：${opts.persona}`);
     return opts;
 }
@@ -128,7 +129,11 @@ async function main() {
     if (opts.prefetch) await prefetch(dir, stickers);
 }
 
-main().catch((err) => {
-    console.error(`匯入失敗：${err.message}`);
-    process.exit(1);
-});
+module.exports = { parseArgs };
+
+if (require.main === module) {
+    main().catch((err) => {
+        console.error(`匯入失敗：${err.message}`);
+        process.exit(1);
+    });
+}

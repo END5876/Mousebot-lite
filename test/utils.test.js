@@ -1,5 +1,8 @@
 'use strict';
 
+// 共用（MouseBot 與 mousebot-lite 都有）：jsonStore、commandSync、rateLimiter、音樂網址工具。
+// TTS 分句（只有 MouseBot 有）在 test/ttsTextSplitter.test.js。
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -8,6 +11,7 @@ const path = require('path');
 
 const { readJson, writeJsonAtomic, createDebouncedWriter } = require('../utils/jsonStore');
 const { hashCommands, stableStringify } = require('../utils/commandSync');
+const { SlidingWindowRateLimiter } = require('../utils/rateLimiter');
 const { cleanUrl, _isYouTubeWithoutList, _formatDuration, _resolveEntryUrl } =
   require('../handlers/musicplayer/unifiedQueue/search/urlUtils');
 
@@ -43,6 +47,16 @@ test('jsonStore：主檔損毀時改讀 .bak；兩者都壞才用 fallback', () 
   assert.deepEqual(readJson(file, 'fallback'), 'fallback');
 });
 
+test('jsonStore：主檔損毀時寫入不會用它蓋掉 .bak', () => {
+  const file = path.join(tmpDir(), 'b2.json');
+  writeJsonAtomic(file, { v: 1 });
+  writeJsonAtomic(file, { v: 2 });
+  fs.writeFileSync(file, '{"v": 2, "trunc');
+  writeJsonAtomic(file, { v: 3 });
+  assert.deepEqual(readJson(file, null), { v: 3 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${file}.bak`, 'utf-8')), { v: 1 });
+});
+
 test('jsonStore：主檔不存在但有 .bak 時從備份還原', () => {
   const file = path.join(tmpDir(), 'c.json');
   fs.writeFileSync(`${file}.bak`, JSON.stringify({ restored: true }));
@@ -70,6 +84,18 @@ test('commandSync：hash 不受 key 順序與指令順序影響，內容變動�
   assert.equal(hashCommands(a), hashCommands(b));
   assert.notEqual(hashCommands(a), hashCommands([{ ...a[0], description: 'y' }, a[1]]));
   assert.equal(stableStringify({ b: 1, a: [1, { d: 2, c: undefined }] }), '{"a":[1,{"d":2}],"b":1}');
+});
+
+// ── rateLimiter ───────────────────────────────────────────
+test('rateLimiter：視窗內超過上限即拒絕，被拒的不佔名額', () => {
+  const limiter = new SlidingWindowRateLimiter(2, 60_000);
+  assert.equal(limiter.check('u').allowed, true);
+  assert.equal(limiter.check('u').allowed, true);
+  const third = limiter.check('u');
+  assert.equal(third.allowed, false);
+  assert.ok(third.retryAfterMs > 0 && third.retryAfterMs <= 60_000);
+  assert.equal(limiter.hits.get('u').length, 2);
+  assert.equal(limiter.check('other').allowed, true);
 });
 
 // ── 音樂網址工具 ──────────────────────────────────────────
