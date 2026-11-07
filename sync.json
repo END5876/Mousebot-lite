@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "2bb439cf70f16a863606318cfac0584d5dc4c44c"
+    "ref": "dc00b7be4f84d54c2c757d63c3bc9e893e5354e4"
   },
   "roots": [
     "admin/",
@@ -40,6 +40,7 @@
     "handlers/ai/aiSettings.js",
     "handlers/ai/aiUtils.js",
     "handlers/ai/chatSanitize.js",
+    "handlers/ai/currentTime.js",
     "handlers/ai/geminiClient.js",
     "handlers/ai/memeStore.js",
     "handlers/ai/modeSelector.js",
@@ -81,6 +82,7 @@
     "test/aiScopeLock.test.js",
     "test/backup.test.js",
     "test/chatSanitize.test.js",
+    "test/currentTime.test.js",
     "test/features.test.js",
     "test/fixtures/features/probe.js",
     "test/fixtures/features/throws.js",

@@ -68,6 +68,19 @@ const geminiPath = require.resolve('../handlers/ai/geminiClient');
 const realGemini = require(geminiPath);
 /** @type {{ systemInstruction: string, contents: object[], config: object }[]} */
 const calls = [];
+// 2026-11-08 加入現在時間：每個請求的本次訊息最前面多一行【現在時間：…】（handlers/ai/currentTime.js）。
+// 每分鐘都不同，記錄前抽掉再比對；位置與內容由 MouseBot 的 behaviorSnapshot 鎖住（aiCore 兩邊相同），
+// 這裡只斷言每個請求的最後一個 user content 剛好有一行（見 stripTimePart）。
+const TIME_PREFIX = '【現在時間：';
+function stripTimePart(contents) {
+  const last = contents.at(-1);
+  const isTime = p => typeof p.text === 'string' && p.text.startsWith(TIME_PREFIX);
+  const found = (last?.parts ?? []).filter(isTime).length;
+  if (last?.role !== 'user' || found !== 1) {
+    throw new Error(`請求的最後一個 user content 應該剛好有一行現在時間，實際 ${found} 行`);
+  }
+  return [...contents.slice(0, -1), { ...last, parts: last.parts.filter(p => !isTime(p)) }];
+}
 let respond = () => 'OK';
 function response(text, extra = {}) {
   return {
@@ -79,6 +92,7 @@ function response(text, extra = {}) {
 require.cache[geminiPath].exports = {
   ...realGemini,
   async generate({ contents, systemInstruction, config = {} }) {
+    contents = stripTimePart(contents);
     calls.push(structuredClone({ systemInstruction, contents, config }));
     // 搜尋階段（帶 googleSearch 工具）：回 NONE＝不需要查資料
     if (config.tools) return response('NONE', { groundingMetadata: {} });
