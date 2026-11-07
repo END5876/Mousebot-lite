@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "35a3e7ac244f521f4660b2ac14e1aaa64d94ab48"
+    "ref": "2bb439cf70f16a863606318cfac0584d5dc4c44c"
   },
   "roots": [
     "admin/",
@@ -105,7 +105,8 @@
     "utils/logger.js",
     "utils/markdown.js",
     "utils/processGuards.js",
-    "utils/rateLimiter.js"
+    "utils/rateLimiter.js",
+    "utils/zhFold.js"
   ],
   "mbOnly": [
     ".github/scripts/smoke-sharp.js",
@@ -131,8 +132,7 @@
     "test/results/**",
     "test/splitbill.test.js",
     "test/ttsTextSplitter.test.js",
-    "utils/heartbeat.js",
-    "utils/zhFold.js"
+    "utils/heartbeat.js"
   ],
   "liteOwned": [
     "profile.js",
