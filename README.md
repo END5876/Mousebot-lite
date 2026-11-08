@@ -111,7 +111,7 @@ npm run check   # 以上兩者（GitHub Actions 每次 push / PR 也會跑 lint 
 ## 本地音樂庫
 
 把音檔（`.mp3` `.wav` `.ogg` `.flac` `.m4a` `.aac`，可放子資料夾）放進 `data/music/`，
-`/music local list` 列出清單，`/play` 自動完成可以直接選歌。線上點歌下載的快取也存在這裡。
+`/music list` 列出清單，`/play` 自動完成可以直接選歌。線上點歌下載的快取也存在這裡。
 
 ## AI 聊天（單一人格）
 
