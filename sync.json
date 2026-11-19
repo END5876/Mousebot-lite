@@ -49,6 +49,12 @@
     "handlers/ai/searchGrounding.js",
     "handlers/ai/t2sTable.js",
     "handlers/ai/tokenTracker.js",
+    "handlers/ai/tools/index.js",
+    "handlers/ai/tools/moderation.js",
+    "handlers/ai/tools/music.js",
+    "handlers/ai/tools/timeoutList.js",
+    "handlers/ai/tools/toolError.js",
+    "handlers/ai/tools/voiceGuard.js",
     "handlers/audioManager.js",
     "handlers/autoJoinHandler.js",
     "handlers/musicplayer/localMusicHandler.js",
@@ -117,7 +123,9 @@
     "admin/api/tts.js",
     "handlers/ai/aiTTS.js",
     "handlers/ai/gugugagaGenerator.js",
-    "handlers/ai/tools/**",
+    "handlers/ai/tools/freeGames.js",
+    "handlers/ai/tools/splitbill.js",
+    "handlers/ai/tools/voice.js",
     "handlers/commandHandler.js",
     "handlers/notice/**",
     "handlers/responseHandler.js",
@@ -139,6 +147,7 @@
   "liteOwned": [
     "profile.js",
     "test/profile.test.js",
-    "test/liteBaseline.test.js"
+    "test/liteBaseline.test.js",
+    "test/liteTools.test.js"
   ]
 }

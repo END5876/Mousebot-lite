@@ -825,7 +825,9 @@ test('B9 管理 API：AI 設定的欄位、沒有多人格與語音加入的路�
     ['ai', 'logs', 'maintenance', 'maintenance:backup', 'overview', 'prompts', 'status', 'usage', 'voice']);
 
   const settings = await call('GET', '/api/ai/settings');
-  assert.deepEqual(Object.keys(settings).sort(), ['limits', 'memoryScope', 'model', 'persona', 'replyChance', 'searchGuilds']);
+  // timeoutUsers：2026-11 起 lite 也有 AI 工具（音樂＋禁言辱罵者），面板可設定禁言名單
+  assert.deepEqual(Object.keys(settings).sort(), ['limits', 'memoryScope', 'model', 'persona', 'replyChance', 'searchGuilds', 'timeoutUsers']);
+  assert.deepEqual(settings.timeoutUsers.users, []);
   assert.deepEqual(settings.persona, { key: 'testfish', name: '測試魚', fromFile: true });
   assert.equal(settings.memoryScope, 'channel');
   assert.equal(settings.model, 'gemini-3.1-flash-lite');
@@ -838,10 +840,14 @@ test('B9 管理 API：AI 設定的欄位、沒有多人格與語音加入的路�
     ['PUT', `/api/ai/scope/${G}`], ['DELETE', `/api/ai/scope/${G}`],
     ['PUT', `/api/ai/scope/channel/${ch.id}`], ['DELETE', `/api/ai/scope/channel/${ch.id}`],
     ['PUT', `/api/ai/user-modes/${X}`], ['DELETE', `/api/ai/user-modes/${X}`],
-    ['POST', `/api/ai/memory/${X}`], ['GET', '/api/members/search'],
+    ['POST', `/api/ai/memory/${X}`],
     ['POST', `/api/voice/${G}/join`], ['POST', `/api/voice/${G}/leave`], ['PUT', `/api/voice/${G}/wake-word`],
   ]) {
     assert.equal(router.match(method, p), null, `${method} ${p} 不應該存在`);
+  }
+  // 禁言名單要搜尋成員，所以鎖定（單一人格）時也有成員搜尋
+  for (const [method, p] of [['GET', '/api/members/search'], ['PUT', `/api/ai/timeout-users/${X}`], ['DELETE', `/api/ai/timeout-users/${X}`]]) {
+    assert.ok(router.match(method, p), `${method} ${p} 應該存在`);
   }
 
   const voice = await call('GET', '/api/voice');
