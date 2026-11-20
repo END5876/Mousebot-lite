@@ -65,15 +65,15 @@ test('只宣告音樂工具；分帳、遊戲、語音的關鍵字不命中預�
   assert.ok(tools._noActionRule().startsWith('【注意】這次沒有替使用者播放音樂。'));
 });
 
-test('禁言：名單空時關閉；名單上的人辱罵 Bot 時禁言 1 分鐘', async () => {
+test('禁言：名單空時關閉；名單上的人辱罵 Bot 時依嚴重度禁言（最長預設 1 分鐘）', async () => {
   assert.equal(tools.needsTools('你這垃圾'), false, '名單空時罵人的字眼不命中預篩');
 
   const m = member();
   process.env.AI_TIMEOUT_USERS = m.id;
-  nextResponse = { functionCalls: [{ name: 'timeout_insulter', args: { reason: '罵 Bot 垃圾' } }] };
+  nextResponse = { functionCalls: [{ name: 'timeout_insulter', args: { reason: '罵 Bot 垃圾', severity: 2 } }] };
   const { text } = await tools.runToolStage({ history: [], parts: parts('你這垃圾'), text: '你這垃圾', ctx: ctxOf(m) });
   assert.deepEqual(declared(), ['music_play', 'music_random', 'music_control', 'music_status', 'timeout_insulter']);
-  assert.deepEqual(m.timeouts, [60_000]);
+  assert.deepEqual(m.timeouts, [24_000], '嚴重度 2 → 最長 60 秒的 2/5');
   assert.match(text, /嗆回去/);
 });
 
