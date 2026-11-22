@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "71ac212f924fa4b082939e7edf55859a151b34e8"
+    "ref": "9fa002b1d016ac489696d57f6a898c750c608fd0"
   },
   "roots": [
     "admin/",
@@ -107,12 +107,14 @@
     "utils/config.js",
     "utils/crashLog.js",
     "utils/dataDir.js",
+    "utils/embedColors.js",
     "utils/features.js",
     "utils/health.js",
     "utils/jsonStore.js",
     "utils/logger.js",
     "utils/markdown.js",
     "utils/processGuards.js",
+    "utils/publicUrls.js",
     "utils/rateLimiter.js",
     "utils/zhFold.js"
   ],
