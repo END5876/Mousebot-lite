@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "c9580ee4f0c061a4c894070a63e46ef7adf771a1"
+    "ref": "dd19b49d93b977fb1d510ae89271f039967c4378"
   },
   "roots": [
     "admin/",
@@ -103,6 +103,7 @@
     "test/features.test.js",
     "test/fixtures/features/probe.js",
     "test/fixtures/features/throws.js",
+    "test/fixtures/ytdlp-cases.json",
     "test/groupHistory.test.js",
     "test/importNekowhale.test.js",
     "test/memeStore.test.js",
@@ -112,6 +113,7 @@
     "test/userModeOverrides.test.js",
     "test/utils.test.js",
     "test/webSync.test.js",
+    "test/ytdlpFlow.test.js",
     "utils/alert.js",
     "utils/bootSummary.js",
     "utils/commandSync.js",
