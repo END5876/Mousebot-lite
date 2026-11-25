@@ -139,6 +139,7 @@
     "test/aiTTS.test.js",
     "test/aiTools.test.js",
     "test/behaviorSnapshot.test.js",
+    "test/fixtures/splitbill-cases.json",
     "test/modelCompare.js",
     "test/moduleSetup.test.js",
     "test/profile.test.js",

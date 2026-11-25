@@ -2,7 +2,8 @@
 ARG BGUTIL_VERSION=2.0.2
 
 # ── 建置 bgutil PO Token Provider HTTP 伺服器（git / devDependencies 只留在這個 stage）──
-FROM node:22-slim AS bgutil-build
+# 基底映像固定到 digest，每次建置內容一致；新版由 Dependabot 每月開 PR 更新
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS bgutil-build
 ARG BGUTIL_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -16,14 +17,14 @@ RUN git clone --depth 1 --single-branch --branch ${BGUTIL_VERSION} \
 
 # ── 安裝 Node 套件（@discordjs/opus 沒有 prebuild 時需要的 make / g++ 只留在這個 stage）──
 # 在獨立 stage 建置：編譯工具不會留在最終映像檔的任何一層裡。
-FROM node:22-slim AS node-deps
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS node-deps
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-FROM node:22-slim
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb
 ARG BGUTIL_VERSION
 
 # ── 系統依賴：ffmpeg（播放轉碼 / 響度正規化）＋ python3-venv（安裝 yt-dlp 用）──
