@@ -376,11 +376,11 @@ const EXPECTED = {
     type: 1,
   },
   // commandSync 的 hash：沒變就不會重新 PUT 指令
-  hashAll: 'c77a5dc884fee98e81f967fbd73daab80eb4cc1434385360367457852e234b93',
+  hashAll: '891e5cfd13076e4b770f1511c0142d36f06602ecd51e7d0c6340a618acff57ad',
   'hash:autojoin': '3ac54ee7c6a6b7c7a0b4d98716ce2bb880d87c8a46f726b4b3e7846489426141',
   'hash:ai': '298562e0535eca25c3f74dbd7b4ff8ec19a0fa7af0b28b0f3fe76ef12f92ba63',
-  'hash:play': '3e2f930bbd432e50c5dc65eae9fabb3d9861d1c63038d94bb05f4f9a3919d22a',
-  'hash:music': 'da9faa26ca06492352190d96cf32b8cac037c5b8a3bc4db24cd088216c890a8c',
+  'hash:play': '29e35b241658ccc1677a2e8a9abda050239905fb0865e5f5ec8beb80b91f2b39',
+  'hash:music': '84dad430012a15d5864e958ced98b2b8794e1315ff3d58e394faebe62449c25c',
 
   // 第一則 @：其他 bot 的訊息被排除；之前的群聊與這次的訊息之間有分隔
   mention1: {
