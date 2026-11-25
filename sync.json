@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "2b4de19305e617a629d9c7ffcdbc44a10178a516"
+    "ref": "e100b4a5e6f54272dbf4a8816d8d98988bffc1a8"
   },
   "roots": [
     "admin/",
@@ -81,6 +81,7 @@
     "test/adminPrompts.test.js",
     "test/agent.test.js",
     "test/aiChance.test.js",
+    "test/aiLimits.test.js",
     "test/aiMemoryPersist.test.js",
     "test/aiPersonaScope.test.js",
     "test/aiQuota.test.js",
