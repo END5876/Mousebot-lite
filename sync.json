@@ -2,7 +2,7 @@
   "upstream": {
     "repo": "END5876/Mousebot",
     "path": "../Mousebot",
-    "ref": "dd19b49d93b977fb1d510ae89271f039967c4378"
+    "ref": "e60a065f40294e560a75f95d428d5098fea3e18f"
   },
   "roots": [
     "admin/",
