@@ -87,6 +87,7 @@
     "handlers/musicplayer/unifiedQueue/webSync.js",
     "handlers/musicplayer/voiceActivityMonitor.js",
     "handlers/presenceHandler.js",
+    "handlers/privacyHandler.js",
     "test/adminAi.test.js",
     "test/adminPrompts.test.js",
     "test/agent.test.js",
@@ -109,6 +110,7 @@
     "test/memeStore.test.js",
     "test/persona.test.js",
     "test/prefetch.test.js",
+    "test/publicMode.test.js",
     "test/searchGrounding.test.js",
     "test/userModeOverrides.test.js",
     "test/utils.test.js",
@@ -127,6 +129,7 @@
     "utils/logger.js",
     "utils/markdown.js",
     "utils/processGuards.js",
+    "utils/publicMode.js",
     "utils/publicUrls.js",
     "utils/rateLimiter.js",
     "utils/zhFold.js"
